@@ -40,7 +40,7 @@ def search_books_hybrid(query):
 
     # Google Books
     try:
-        url = f"https://www.googleapis.com/books/v1/volumes?q={clean_query}&maxResults=10"
+        url = f"https://www.googleapis.com/books/v1/volumes?q={clean_query}&maxResults=15"
         response = requests.get(url)
         if response.status_code == 200:
             data = response.json()
@@ -119,7 +119,7 @@ def decode_barcode(image_file):
 # --- 3. APP INTERFACE ---
 tab1, tab2 = st.tabs(["➕ Add Books", "📋 Loan Desk"])
 
-# --- TAB 1: ADD BOOKS (Unchanged) ---
+# --- TAB 1: ADD BOOKS ---
 with tab1:
     st.write("### Find a Book")
     img_file = st.camera_input("Scan Barcode")
@@ -136,6 +136,7 @@ with tab1:
                 if not results: st.error("No books found.")
     
     if 'results' in st.session_state and st.session_state['results']:
+        st.write(f"Found {len(st.session_state['results'])} results:")
         for i, book in enumerate(st.session_state['results']):
             with st.container():
                 c1, c2, c3 = st.columns([1, 3, 2])
@@ -150,7 +151,7 @@ with tab1:
                         st.toast("✅ Added!")
                 st.divider()
 
-# --- TAB 2: LOAN MANAGER (New!) ---
+# --- TAB 2: LOAN MANAGER (Optimized for Large Libraries) ---
 with tab2:
     st.header("Loan Desk")
     
@@ -162,53 +163,67 @@ with tab2:
     else:
         df = pd.DataFrame(data)
         
-        # 2. Select Book to Edit
-        book_list = df['Title'].tolist()
-        selected_book = st.selectbox("Select a Book to Manage:", book_list)
+        # 2. Search Filter
+        st.write("##### Search Collection")
+        search_term = st.text_input("Filter by Title or Author...", placeholder="e.g. Gatsby")
         
-        # Find the specific row for this book
-        # We add 2 to index because: DataFrame starts at 0, Sheet starts at 1, Header is row 1.
-        # So DataFrame Index 0 is actually Sheet Row 2.
-        book_index = df[df['Title'] == selected_book].index[0]
-        sheet_row_number = book_index + 2 
+        # Filter the DataFrame based on search
+        if search_term:
+            filtered_df = df[
+                df['Title'].astype(str).str.contains(search_term, case=False) | 
+                df['Author'].astype(str).str.contains(search_term, case=False)
+            ]
+        else:
+            filtered_df = df # Show all if search is empty
         
-        current_status = df.loc[book_index, 'Status']
-        current_borrower = df.loc[book_index, 'Borrower']
+        # 3. Dynamic Dropdown (Shows only filtered results)
+        book_list = filtered_df['Title'].tolist()
         
-        st.info(f"Current Status: **{current_status}** | Borrower: **{current_borrower}**")
-        
-        # 3. Edit Form
-        with st.form("edit_loan"):
-            st.write("### Update Status")
+        if not book_list:
+            st.warning("No matching books found.")
+        else:
+            selected_book = st.selectbox("Select Book to Edit:", book_list)
             
-            new_status = st.radio(
-                "Status", 
-                ["Available", "Borrowed", "Not Available"],
-                index=["Available", "Borrowed", "Not Available"].index(current_status) if current_status in ["Available", "Borrowed", "Not Available"] else 0
-            )
-            
-            # Show borrower name box
-            new_borrower = st.text_input("Borrower Name", value=current_borrower)
-            
-            # If they select 'Available', we should clear the borrower name automatically
-            if new_status == "Available":
-                st.caption("ℹ️ Setting to 'Available' will clear the borrower name.")
-            
-            if st.form_submit_button("Update Book"):
-                try:
-                    # Update Google Sheet Cells
-                    # Column 4 is Status, Column 5 is Borrower
-                    
-                    final_borrower = new_borrower if new_status == "Borrowed" else ""
-                    
-                    sheet.update_cell(sheet_row_number, 4, new_status)
-                    sheet.update_cell(sheet_row_number, 5, final_borrower)
-                    
-                    st.success(f"✅ Updated '{selected_book}' to {new_status}!")
-                    st.rerun() # Refresh page to show new data
-                except Exception as e:
-                    st.error(f"Error updating: {e}")
-
-        st.divider()
-        st.subheader("Full Library List")
-        st.dataframe(df[['Title', 'Author', 'Status', 'Borrower']])
+            # 4. Editing Interface
+            if selected_book:
+                # Get the exact row data
+                # We search the ORIGINAL dataframe to find the index (essential for writing back to sheet)
+                original_index = df[df['Title'] == selected_book].index[0]
+                sheet_row_number = original_index + 2 
+                
+                # Get current values
+                current_status = df.loc[original_index, 'Status']
+                current_borrower = df.loc[original_index, 'Borrower']
+                current_cover = df.loc[original_index, 'Cover_URL'] # Assuming 'Cover_URL' column exists
+                
+                st.divider()
+                
+                # Layout: Image on Left, Form on Right
+                col_img, col_form = st.columns([1, 2])
+                
+                with col_img:
+                    if current_cover and str(current_cover).startswith("http"):
+                         st.image(current_cover, width=120)
+                    else:
+                         st.write("📘 No Cover")
+                
+                with col_form:
+                    st.subheader(selected_book)
+                    with st.form("edit_loan"):
+                        new_status = st.radio(
+                            "Status", 
+                            ["Available", "Borrowed", "Not Available"],
+                            index=["Available", "Borrowed", "Not Available"].index(current_status) if current_status in ["Available", "Borrowed", "Not Available"] else 0
+                        )
+                        
+                        new_borrower = st.text_input("Borrower Name", value=current_borrower)
+                        
+                        if st.form_submit_button("💾 Save Changes"):
+                            try:
+                                final_borrower = new_borrower if new_status == "Borrowed" else ""
+                                sheet.update_cell(sheet_row_number, 4, new_status)
+                                sheet.update_cell(sheet_row_number, 5, final_borrower)
+                                st.success("Updated!")
+                                st.rerun()
+                            except Exception as e:
+                                st.error(f"Error: {e}")
