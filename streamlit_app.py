@@ -5,6 +5,7 @@ import requests
 import pandas as pd
 from PIL import Image
 from pyzbar.pyzbar import decode
+from datetime import datetime
 
 st.set_page_config(page_title="Lumesta Library", page_icon="📚", layout="centered")
 
@@ -191,7 +192,6 @@ with tab1:
                     st.caption(f"{b['author']} | Source: {b['source']}")
                 with c3:
                     if st.button("Add", key=f"a_{i}"):
-                        # Columns: Owner(1), ISBN(2), Title(3), Author(4), Status(5), Borrower(6), Due_Date(7), Cover_URL(8), Reading_Progress(9)
                         sheet.append_row([st.session_state['username'], b['isbn'], b['title'], b['author'], "Available", "", "", b['cover'], ""])
                         st.toast("✅ Added!")
                 st.divider()
@@ -266,11 +266,25 @@ with tab2:
                         with st.form("loan_form"):
                             st.markdown(f"### {sel}")
                             n_s = st.radio("Status", ["Available", "Borrowed", "Reading"], index=["Available", "Borrowed", "Reading"].index(df.loc[idx, 'Status']) if df.loc[idx, 'Status'] in ["Available", "Borrowed", "Reading"] else 0)
-                            n_b = st.text_input("Borrower", value=df.loc[idx, 'Borrower'])
+                            
+                            # MODIFIED PORTION: Activate Borrower and Due Date when Borrowed is selected
+                            n_b = st.text_input("Borrower", value=df.loc[idx, 'Borrower'], disabled=(n_s != "Borrowed"))
+                            
+                            # Handle Date conversion safely
+                            current_due_str = str(df.loc[idx, 'Due_Date'])
+                            try:
+                                default_date = datetime.strptime(current_due_str, "%Y-%m-%d").date()
+                            except:
+                                default_date = datetime.now().date()
+                            
+                            n_d = st.date_input("Due Date", value=default_date, disabled=(n_s != "Borrowed"))
+                            
                             if st.form_submit_button("Save"):
                                 sheet.update_cell(row_n, 5, n_s)
                                 sheet.update_cell(row_n, 6, n_b if n_s == "Borrowed" else "")
+                                # Update Column 7 (Due_Date)
+                                sheet.update_cell(row_n, 7, str(n_d) if n_s == "Borrowed" else "")
                                 if n_s == "Reading": sheet.update_cell(row_n, 9, "10% or less")
                                 st.rerun()
             st.divider()
-            st.dataframe(my_books[['Title', 'Author', 'Status', 'Borrower', 'Reading_Progress']], use_container_width=True, hide_index=True)
+            st.dataframe(my_books[['Title', 'Author', 'Status', 'Borrower', 'Due_Date', 'Reading_Progress']], use_container_width=True, hide_index=True)
