@@ -68,6 +68,7 @@ def search_books_hybrid(query):
 
     # STRATEGY B: Open Library (Backup for ISBNs)
     # Only runs if Google failed OR if the query looks like an ISBN
+    # This ensures we catch books that Google misses!
     if not found_books or clean_query.replace("-", "").isdigit():
         clean_isbn = clean_query.replace("-", "")
         try:
@@ -86,7 +87,7 @@ def search_books_hybrid(query):
                     "isbn": clean_isbn,
                     "published": info.get("publish_date", "")
                 }
-                # Add to the TOP of the list
+                # Add to the TOP of the list so it's the first thing you see
                 found_books.insert(0, book)
         except:
             pass
@@ -119,11 +120,68 @@ with tab1:
             st.success(f"Scanned: {scanned_code}")
 
     # Search Box
+    # If the camera found a code, put it in the box. Otherwise leave it empty.
     default = scanned_code if scanned_code else ""
     user_query = st.text_input("Enter Title, Author, or ISBN", value=default)
 
     # Search Button
     if st.button("Search", type="primary"):
         if user_query:
-            with st.spinner(f"Searching for '{user_query}
-^
+            # THIS IS THE FIXED LINE:
+            with st.spinner(f"Searching for '{user_query}'..."):
+                results = search_books_hybrid(user_query)
+                st.session_state['results'] = results
+                
+                if not results:
+                    st.error("No books found in Google OR OpenLibrary.")
+        else:
+            st.warning("Please enter text to search.")
+
+    # Display Results
+    if 'results' in st.session_state and st.session_state['results']:
+        results = st.session_state['results']
+        st.write(f"Found {len(results)} results:")
+        
+        for i, book in enumerate(results):
+            with st.container():
+                col1, col2, col3 = st.columns([1, 3, 2])
+                
+                # Image
+                with col1:
+                    if book['cover']:
+                        st.image(book['cover'], width=60)
+                    else:
+                        st.write("📘")
+                
+                # Text
+                with col2:
+                    st.markdown(f"**{book['title']}**")
+                    st.caption(f"{book['author']}")
+                    st.caption(f"ISBN: {book['isbn']} | Source: {book['source']}")
+                
+                # Button
+                with col3:
+                    if st.button("Add", key=f"add_{i}"):
+                        try:
+                            sheet.append_row([
+                                book['isbn'], 
+                                book['title'], 
+                                book['author'], 
+                                "Available", 
+                                "", 
+                                "", 
+                                book['cover']
+                            ])
+                            st.toast(f"✅ Added {book['title']}!")
+                        except:
+                            st.error("Save failed. Check Permissions.")
+                st.divider()
+
+with tab2:
+    if st.button("Refresh List"):
+        st.rerun()
+    data = sheet.get_all_records()
+    if data:
+        st.dataframe(pd.DataFrame(data))
+    else:
+        st.info("Empty Library")
