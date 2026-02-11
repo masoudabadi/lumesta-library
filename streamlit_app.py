@@ -8,7 +8,16 @@ from pyzbar.pyzbar import decode
 
 st.set_page_config(page_title="Lumesta Library", page_icon="📚", layout="centered")
 
-# --- 1. CONNECT TO DATABASE ---
+# --- 1. SAFETY BLOCK (Fixes the Error) ---
+# We make sure these exist before doing ANYTHING else
+if 'logged_in' not in st.session_state:
+    st.session_state['logged_in'] = False
+if 'username' not in st.session_state:
+    st.session_state['username'] = ""
+if 'display_name' not in st.session_state:
+    st.session_state['display_name'] = ""
+
+# --- 2. CONNECT TO DATABASE ---
 try:
     creds_dict = {
         "type": st.secrets["gcp_service_account"]["type"],
@@ -33,29 +42,24 @@ except Exception as e:
     st.error(f"Database Error: {e}")
     st.stop()
 
-# --- 2. AUTHENTICATION SYSTEM ---
-if 'logged_in' not in st.session_state:
-    st.session_state['logged_in'] = False
-
+# --- 3. AUTHENTICATION LOGIC ---
 def login_user(username, password):
     users = user_sheet.get_all_records()
     for user in users:
+        # Check matching username/password
         if str(user['Username']).strip().lower() == username.strip().lower() and str(user['Password']) == str(password):
             return user['Name']
     return None
 
 def signup_user(username, password, name):
     users = user_sheet.get_all_records()
-    # Check if username exists
     for user in users:
         if str(user['Username']).strip().lower() == username.strip().lower():
-            return False # User exists
-    
-    # Add new user
+            return False # User already exists
     user_sheet.append_row([username, password, name])
     return True
 
-# --- LOGIN / SIGNUP SCREEN ---
+# --- 4. LOGIN SCREEN (Gatekeeper) ---
 if not st.session_state['logged_in']:
     st.title("📚 Lumesta Library")
     
@@ -63,56 +67,56 @@ if not st.session_state['logged_in']:
     
     with tab_login:
         with st.form("login_form"):
-            username = st.text_input("Username")
-            password = st.text_input("Password", type="password")
-            submit = st.form_submit_button("Login")
-            
-            if submit:
-                user_name = login_user(username, password)
-                if user_name:
+            user_in = st.text_input("Username")
+            pass_in = st.text_input("Password", type="password")
+            if st.form_submit_button("Login"):
+                name_found = login_user(user_in, pass_in)
+                if name_found:
                     st.session_state['logged_in'] = True
-                    st.session_state['username'] = username.lower()
-                    st.session_state['display_name'] = user_name
-                    st.success(f"Welcome back, {user_name}!")
+                    st.session_state['username'] = user_in.lower()
+                    st.session_state['display_name'] = name_found
                     st.rerun()
                 else:
                     st.error("Incorrect username or password.")
 
     with tab_signup:
         with st.form("signup_form"):
-            new_user = st.text_input("Choose a Username")
-            new_pass = st.text_input("Choose a Password", type="password")
-            new_name = st.text_input("Your Full Name (e.g. Jackie)")
-            submit_signup = st.form_submit_button("Sign Up")
-            
-            if submit_signup:
+            new_user = st.text_input("Choose Username")
+            new_pass = st.text_input("Choose Password", type="password")
+            new_name = st.text_input("Full Name (e.g. Masoud)")
+            if st.form_submit_button("Sign Up"):
                 if new_user and new_pass and new_name:
                     if signup_user(new_user, new_pass, new_name):
-                        st.success("Account created! Logging you in...")
+                        st.success("Account created! logging in...")
                         st.session_state['logged_in'] = True
                         st.session_state['username'] = new_user.lower()
                         st.session_state['display_name'] = new_name
                         st.rerun()
                     else:
-                        st.error("That username is already taken.")
+                        st.error("Username taken.")
                 else:
-                    st.warning("Please fill in all fields.")
+                    st.warning("Fill all fields.")
     
-    st.stop() # Stop here if not logged in
+    st.stop() # CRITICAL: Stop here if not logged in
 
-# --- 3. MAIN APP (LOGGED IN) ---
+# --- 5. MAIN APP (Only runs if Logged In) ---
+
+# Sidebar Logout
 st.sidebar.title(f"Hi, {st.session_state['display_name']}!")
 if st.sidebar.button("Logout"):
     st.session_state['logged_in'] = False
+    st.session_state['username'] = ""
+    st.session_state['display_name'] = ""
     st.rerun()
 
 st.title(f"{st.session_state['display_name']}'s Library")
 
-# --- SEARCH FUNCTION ---
+# --- HELPER: SEARCH FUNCTION ---
 def search_books_hybrid(query):
     results = []
+    # Google Books
     try:
-        url = f"https://www.googleapis.com/books/v1/volumes?q={query}&maxResults=10"
+        url = f"https://www.googleapis.com/books/v1/volumes?q={query}&maxResults=15"
         data = requests.get(url).json()
         if "items" in data:
             for item in data["items"]:
@@ -129,89 +133,99 @@ def search_books_hybrid(query):
                     "isbn": isbn
                 })
     except: pass
-    return results
+    
+    # Deduplicate
+    unique = []
+    seen = set()
+    for r in results:
+        fp = r['title'].lower()
+        if fp not in seen:
+            seen.add(fp)
+            unique.append(r)
+    return unique
 
-# --- APP TABS ---
+# --- TABS ---
 tab1, tab2 = st.tabs(["➕ Add Books", "📋 My Collection"])
 
+# Tab 1: Add
 with tab1:
     st.subheader("Add to Your Collection")
-    query = st.text_input("Search by Title, Author, or ISBN")
+    query = st.text_input("Search Title, Author, or ISBN")
     if st.button("Search Books"):
         if query:
-            results = search_books_hybrid(query)
-            st.session_state['search_results'] = results
-    
+            st.session_state['search_results'] = search_books_hybrid(query)
+
     if 'search_results' in st.session_state:
         for i, book in enumerate(st.session_state['search_results']):
             with st.container():
                 c1, c2, c3 = st.columns([1, 3, 1])
-                with c1: st.image(book['cover'], width=60) if book['cover'] else st.write("📘")
-                with c2: 
-                    st.write(f"**{book['title']}**")
+                with c1:
+                    st.image(book['cover'], width=60) if book['cover'] else st.write("📘")
+                with c2:
+                    st.markdown(f"**{book['title']}**")
                     st.caption(book['author'])
                 with c3:
                     if st.button("Add", key=f"add_{i}"):
-                        # Adds the book with the CURRENT USER'S username
-                        sheet.append_row([st.session_state['username'], book['isbn'], book['title'], book['author'], "Available", "", "", book['cover']])
+                        sheet.append_row([
+                            st.session_state['username'], 
+                            book['isbn'], 
+                            book['title'], 
+                            book['author'], 
+                            "Available", 
+                            "", 
+                            "", 
+                            book['cover']
+                        ])
                         st.toast(f"Added to {st.session_state['display_name']}'s list!")
                 st.divider()
 
+# Tab 2: Manage
 with tab2:
     st.subheader("Manage Your Books")
-    
-    # 1. Get All Data
     all_data = sheet.get_all_records()
     df = pd.DataFrame(all_data)
-    
-    # 2. Filter for CURRENT USER only
-    # We check if 'Owner' column exists first to avoid errors
+
+    # Filter by Owner
     if not df.empty and 'Owner' in df.columns:
         my_books = df[df['Owner'].astype(str).str.lower() == st.session_state['username']]
         
         if my_books.empty:
-            st.info("You haven't added any books yet.")
+            st.info("No books yet.")
         else:
-            # Search Filter
-            filter_text = st.text_input("Filter your books:", placeholder="Type a title...")
-            if filter_text:
-                my_books = my_books[my_books['Title'].astype(str).str.contains(filter_text, case=False)]
-            
-            # Book Selection
-            book_titles = my_books['Title'].tolist()
-            if book_titles:
-                selected_title = st.selectbox("Select a book to edit:", book_titles)
+            # Filter
+            filter_txt = st.text_input("Filter your list:", placeholder="Type title...")
+            if filter_txt:
+                my_books = my_books[my_books['Title'].astype(str).str.contains(filter_txt, case=False)]
+
+            # Selector
+            titles = my_books['Title'].tolist()
+            if titles:
+                sel = st.selectbox("Select book to edit:", titles)
                 
-                # Find the row in the ORIGINAL dataframe (to get the right Index)
-                # We filter the original DF to find the row where Title matches AND Owner matches
-                # This prevents editing someone else's book if they have the same title
-                row_match = df[(df['Title'] == selected_title) & (df['Owner'].astype(str).str.lower() == st.session_state['username'])]
-                
-                if not row_match.empty:
-                    idx = row_match.index[0]
-                    sheet_row = idx + 2
-                    
-                    current_status = df.loc[idx, 'Status']
-                    current_borrower = df.loc[idx, 'Borrower']
-                    current_cover = df.loc[idx, 'Cover_URL'] if 'Cover_URL' in df.columns else ""
+                # Find EXACT row match (Owner + Title)
+                mask = (df['Title'] == sel) & (df['Owner'].astype(str).str.lower() == st.session_state['username'])
+                if not df[mask].empty:
+                    idx = df[mask].index[0]
+                    row_num = idx + 2 # Header is 1, index starts at 0
+
+                    cur_status = df.loc[idx, 'Status']
+                    cur_borrower = df.loc[idx, 'Borrower']
+                    cur_cover = df.loc[idx, 'Cover_URL'] if 'Cover_URL' in df.columns else ""
 
                     st.divider()
-                    col_a, col_b = st.columns([1, 2])
+                    colA, colB = st.columns([1,2])
+                    with colA:
+                        if str(cur_cover).startswith("http"):
+                            st.image(cur_cover, width=100)
+                        else: st.write("📘")
                     
-                    with col_a:
-                        if str(current_cover).startswith("http"):
-                            st.image(current_cover, width=100)
-                        else:
-                            st.write("📘")
-                    
-                    with col_b:
-                        with st.form("update_status"):
-                            st.write(f"**{selected_title}**")
-                            new_status = st.radio("Status", ["Available", "Borrowed"], index=0 if current_status == "Available" else 1)
-                            new_borrower = st.text_input("Borrower Name", value=current_borrower)
-                            
-                            if st.form_submit_button("Save Changes"):
-                                sheet.update_cell(sheet_row, 5, new_status) # Col E
-                                sheet.update_cell(sheet_row, 6, new_borrower if new_status == "Borrowed" else "") # Col F
+                    with colB:
+                        with st.form("edit_status"):
+                            st.markdown(f"**{sel}**")
+                            new_stat = st.radio("Status", ["Available", "Borrowed"], index=0 if cur_status=="Available" else 1)
+                            new_bor = st.text_input("Borrower Name", value=cur_borrower)
+                            if st.form_submit_button("Save"):
+                                sheet.update_cell(row_num, 5, new_stat) # Col E
+                                sheet.update_cell(row_num, 6, new_bor if new_stat=="Borrowed" else "") # Col F
                                 st.success("Updated!")
                                 st.rerun()
