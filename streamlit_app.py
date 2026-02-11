@@ -126,3 +126,4 @@ with tab1:
     if st.button("Search", type="primary"):
         if user_query:
             with st.spinner(f"Searching for '{user_query}
+^
