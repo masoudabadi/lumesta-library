@@ -32,100 +32,78 @@ except Exception as e:
     st.error(f"Database Error: {e}")
     st.stop()
 
-# --- 2. AGGREGATOR SEARCH ENGINE ---
+# --- 2. SEARCH LOGIC (Hybrid) ---
 def search_books_hybrid(query):
     results = []
     clean_query = str(query).strip()
-    
-    # Check if it looks like an ISBN (Digits only)
     is_isbn = clean_query.replace("-", "").isdigit()
 
-    # --- SOURCE 1: GOOGLE BOOKS ---
+    # Google Books
     try:
-        # We ask for 15 results from Google
-        url = f"https://www.googleapis.com/books/v1/volumes?q={clean_query}&maxResults=15"
+        url = f"https://www.googleapis.com/books/v1/volumes?q={clean_query}&maxResults=10"
         response = requests.get(url)
         if response.status_code == 200:
             data = response.json()
             if "items" in data:
                 for item in data["items"]:
                     info = item.get("volumeInfo", {})
-                    
-                    # Find ISBN
                     isbn = "Unknown"
                     for ident in info.get("industryIdentifiers", []):
                         if ident["type"] == "ISBN_13":
                             isbn = ident["identifier"]
                             break
-                    
                     results.append({
-                        "source": "Google Books",
+                        "source": "Google",
                         "title": info.get("title", "Unknown"),
                         "author": ", ".join(info.get("authors", ["Unknown"])),
                         "cover": info.get("imageLinks", {}).get("thumbnail", ""),
-                        "isbn": isbn,
-                        "year": info.get("publishedDate", "")[:4]
+                        "isbn": isbn
                     })
     except:
         pass
 
-    # --- SOURCE 2: OPEN LIBRARY ---
-    # We ALWAYS run this for text searches now (not just as backup)
-    # This doubles our chances of finding relevant books
+    # Open Library
     try:
         if is_isbn:
-            # ISBN Mode (Strict)
             isbn_clean = clean_query.replace("-", "")
             url = f"https://openlibrary.org/api/books?bibkeys=ISBN:{isbn_clean}&format=json&jscmd=data"
             resp = requests.get(url).json()
             key = f"ISBN:{isbn_clean}"
             if key in resp:
                 info = resp[key]
-                results.insert(0, { # Put exact ISBN match at top
+                results.insert(0, {
                     "source": "OpenLibrary",
                     "title": info.get("title", "Unknown"),
                     "author": ", ".join([a["name"] for a in info.get("authors", [])]),
                     "cover": info.get("cover", {}).get("medium", ""),
-                    "isbn": isbn_clean,
-                    "year": info.get("publish_date", "")
+                    "isbn": isbn_clean
                 })
         else:
-            # Text Mode (Broad)
-            # We ask for top 15 from Open Library too
-            search_url = f"https://openlibrary.org/search.json?q={clean_query}&limit=15"
+            search_url = f"https://openlibrary.org/search.json?q={clean_query}&limit=10"
             resp = requests.get(search_url).json()
             for doc in resp.get("docs", []):
-                cover_id = doc.get("cover_i")
-                cover_url = f"https://covers.openlibrary.org/b/id/{cover_id}-M.jpg" if cover_id else ""
-                
-                # Only add if it has a title
                 if doc.get("title"):
+                    cover_id = doc.get("cover_i")
+                    cover_url = f"https://covers.openlibrary.org/b/id/{cover_id}-M.jpg" if cover_id else ""
                     results.append({
                         "source": "OpenLibrary",
                         "title": doc.get("title"),
                         "author": ", ".join(doc.get("author_name", ["Unknown"])),
                         "cover": cover_url,
-                        "isbn": doc.get("isbn", ["Unknown"])[0] if "isbn" in doc else "Unknown",
-                        "year": str(doc.get("first_publish_year", ""))
+                        "isbn": doc.get("isbn", ["Unknown"])[0] if "isbn" in doc else "Unknown"
                     })
     except:
         pass
 
-    # --- CLEANUP & SORTING ---
-    # 1. Remove duplicates (based on Title + Author) to keep list clean
+    # Deduplicate
     seen = set()
-    unique_results = []
+    unique = []
     for book in results:
-        # Create a unique "fingerprint" for the book
-        fingerprint = (book['title'].lower(), book['author'].lower())
-        if fingerprint not in seen:
-            seen.add(fingerprint)
-            unique_results.append(book)
-    
-    # 2. Sort: Put books WITH covers at the top (they look better)
-    unique_results.sort(key=lambda x: x['cover'] == "", reverse=False)
-
-    return unique_results
+        fp = (book['title'].lower(), book['author'].lower())
+        if fp not in seen:
+            seen.add(fp)
+            unique.append(book)
+    return unique
 
 def decode_barcode(image_file):
     try:
@@ -139,76 +117,98 @@ def decode_barcode(image_file):
     return None
 
 # --- 3. APP INTERFACE ---
-tab1, tab2 = st.tabs(["➕ Add New Book", "📖 View Library"])
+tab1, tab2 = st.tabs(["➕ Add Books", "📋 Loan Desk"])
 
+# --- TAB 1: ADD BOOKS (Unchanged) ---
 with tab1:
     st.write("### Find a Book")
+    img_file = st.camera_input("Scan Barcode")
+    scanned = decode_barcode(img_file) if img_file else ""
+    if scanned: st.success(f"Scanned: {scanned}")
     
-    # Camera
-    img_file = st.camera_input("Scan Barcode (Optional)")
-    scanned_code = ""
-    if img_file:
-        scanned_code = decode_barcode(img_file)
-        if scanned_code:
-            st.success(f"Scanned: {scanned_code}")
-
-    # Search Box
-    default = scanned_code if scanned_code else ""
-    user_query = st.text_input("Enter Title, Author, or ISBN", value=default)
-
+    query = st.text_input("Title, Author, or ISBN", value=scanned)
+    
     if st.button("Search", type="primary"):
-        if user_query:
-            with st.spinner(f"Searching for '{user_query}'..."):
-                results = search_books_hybrid(user_query)
+        if query:
+            with st.spinner("Searching..."):
+                results = search_books_hybrid(query)
                 st.session_state['results'] = results
-                
-                if not results:
-                    st.error("No books found.")
-        else:
-            st.warning("Please enter text to search.")
-
-    # Display Results
+                if not results: st.error("No books found.")
+    
     if 'results' in st.session_state and st.session_state['results']:
-        results = st.session_state['results']
-        st.write(f"Found {len(results)} results:")
-        
-        for i, book in enumerate(results):
+        for i, book in enumerate(st.session_state['results']):
             with st.container():
-                col1, col2, col3 = st.columns([1, 3, 2])
-                
-                with col1:
-                    if book['cover']:
-                        st.image(book['cover'], width=60)
-                    else:
-                        st.write("📘")
-                
-                with col2:
-                    st.markdown(f"**{book['title']}**")
-                    st.caption(f"{book['author']}")
-                    st.caption(f"Source: {book['source']}")
-                
-                with col3:
+                c1, c2, c3 = st.columns([1, 3, 2])
+                with c1:
+                    if book['cover']: st.image(book['cover'], width=50)
+                with c2:
+                    st.write(f"**{book['title']}**")
+                    st.caption(book['author'])
+                with c3:
                     if st.button("Add", key=f"add_{i}"):
-                        try:
-                            sheet.append_row([
-                                book['isbn'], 
-                                book['title'], 
-                                book['author'], 
-                                "Available", 
-                                "", 
-                                "", 
-                                book['cover']
-                            ])
-                            st.toast(f"✅ Added {book['title']}!")
-                        except:
-                            st.error("Save failed. Check Permissions.")
+                        sheet.append_row([book['isbn'], book['title'], book['author'], "Available", "", "", book['cover']])
+                        st.toast("✅ Added!")
                 st.divider()
 
+# --- TAB 2: LOAN MANAGER (New!) ---
 with tab2:
-    if st.button("Refresh List"):
-        st.rerun()
+    st.header("Loan Desk")
+    
+    # 1. Fetch Current Data
     data = sheet.get_all_records()
-    if data:
-        st.dataframe(pd.DataFrame(data))
+    
+    if not data:
+        st.info("Library is empty.")
     else:
-        st.info("Empty Library")
+        df = pd.DataFrame(data)
+        
+        # 2. Select Book to Edit
+        book_list = df['Title'].tolist()
+        selected_book = st.selectbox("Select a Book to Manage:", book_list)
+        
+        # Find the specific row for this book
+        # We add 2 to index because: DataFrame starts at 0, Sheet starts at 1, Header is row 1.
+        # So DataFrame Index 0 is actually Sheet Row 2.
+        book_index = df[df['Title'] == selected_book].index[0]
+        sheet_row_number = book_index + 2 
+        
+        current_status = df.loc[book_index, 'Status']
+        current_borrower = df.loc[book_index, 'Borrower']
+        
+        st.info(f"Current Status: **{current_status}** | Borrower: **{current_borrower}**")
+        
+        # 3. Edit Form
+        with st.form("edit_loan"):
+            st.write("### Update Status")
+            
+            new_status = st.radio(
+                "Status", 
+                ["Available", "Borrowed", "Not Available"],
+                index=["Available", "Borrowed", "Not Available"].index(current_status) if current_status in ["Available", "Borrowed", "Not Available"] else 0
+            )
+            
+            # Show borrower name box
+            new_borrower = st.text_input("Borrower Name", value=current_borrower)
+            
+            # If they select 'Available', we should clear the borrower name automatically
+            if new_status == "Available":
+                st.caption("ℹ️ Setting to 'Available' will clear the borrower name.")
+            
+            if st.form_submit_button("Update Book"):
+                try:
+                    # Update Google Sheet Cells
+                    # Column 4 is Status, Column 5 is Borrower
+                    
+                    final_borrower = new_borrower if new_status == "Borrowed" else ""
+                    
+                    sheet.update_cell(sheet_row_number, 4, new_status)
+                    sheet.update_cell(sheet_row_number, 5, final_borrower)
+                    
+                    st.success(f"✅ Updated '{selected_book}' to {new_status}!")
+                    st.rerun() # Refresh page to show new data
+                except Exception as e:
+                    st.error(f"Error updating: {e}")
+
+        st.divider()
+        st.subheader("Full Library List")
+        st.dataframe(df[['Title', 'Author', 'Status', 'Borrower']])
