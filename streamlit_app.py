@@ -60,7 +60,6 @@ def signup_user(username, password, name):
 if not st.session_state['logged_in']:
     st.title("📚 Lumesta Library")
     t_log, t_sign = st.tabs(["Login", "Create Account"])
-    
     with t_log:
         with st.form("login_form"):
             u = st.text_input("Username")
@@ -72,7 +71,6 @@ if not st.session_state['logged_in']:
                     st.rerun()
                 else:
                     st.error("Invalid credentials.")
-                    
     with t_sign:
         with st.form("sign_form"):
             nu = st.text_input("Username")
@@ -94,7 +92,7 @@ if st.sidebar.button("Logout"):
 
 st.title(f"{st.session_state['display_name']}'s Library")
 
-# --- 6. BARCODE & SEARCH LOGIC ---
+# --- 6. SEARCH LOGIC ---
 def decode_barcode(image_file):
     try:
         image = Image.open(image_file)
@@ -102,15 +100,13 @@ def decode_barcode(image_file):
         for obj in decoded_objects:
             if obj.type in ['EAN13', 'ISBN13']:
                 return obj.data.decode('utf-8')
-    except:
-        pass
+    except: pass
     return None
 
 def search_books_hybrid(query):
     results = []
     clean_query = str(query).strip()
     is_isbn = clean_query.replace("-", "").isdigit()
-
     try:
         url = f"https://www.googleapis.com/books/v1/volumes?q={clean_query}&maxResults=15"
         data = requests.get(url).json()
@@ -118,15 +114,8 @@ def search_books_hybrid(query):
             for item in data["items"]:
                 info = item.get("volumeInfo", {})
                 isbn = next((i["identifier"] for i in info.get("industryIdentifiers", []) if i["type"] == "ISBN_13"), "Unknown")
-                results.append({
-                    "source": "Google",
-                    "title": info.get("title", "Unknown"),
-                    "author": ", ".join(info.get("authors", ["Unknown"])),
-                    "cover": info.get("imageLinks", {}).get("thumbnail", ""),
-                    "isbn": isbn
-                })
+                results.append({"title": info.get("title", "Unknown"), "author": ", ".join(info.get("authors", ["Unknown"])), "cover": info.get("imageLinks", {}).get("thumbnail", ""), "isbn": isbn})
     except: pass
-
     try:
         if is_isbn:
             isbn_clean = clean_query.replace("-", "")
@@ -135,27 +124,14 @@ def search_books_hybrid(query):
             key = f"ISBN:{isbn_clean}"
             if key in resp:
                 info = resp[key]
-                results.insert(0, {
-                    "source": "OpenLibrary",
-                    "title": info.get("title", "Unknown"),
-                    "author": ", ".join([a["name"] for a in info.get("authors", [])]),
-                    "cover": info.get("cover", {}).get("medium", ""),
-                    "isbn": isbn_clean
-                })
+                results.insert(0, {"title": info.get("title", "Unknown"), "author": ", ".join([a["name"] for a in info.get("authors", [])]), "cover": info.get("cover", {}).get("medium", ""), "isbn": isbn_clean})
         else:
             url = f"https://openlibrary.org/search.json?q={clean_query}&limit=15"
             resp = requests.get(url).json()
             for doc in resp.get("docs", []):
                 cover_id = doc.get("cover_i")
-                results.append({
-                    "source": "OpenLibrary",
-                    "title": doc.get("title", "Unknown"),
-                    "author": ", ".join(doc.get("author_name", ["Unknown"])),
-                    "cover": f"https://covers.openlibrary.org/b/id/{cover_id}-M.jpg" if cover_id else "",
-                    "isbn": doc.get("isbn", ["Unknown"])[0] if "isbn" in doc else "Unknown"
-                })
+                results.append({"title": doc.get("title", "Unknown"), "author": ", ".join(doc.get("author_name", ["Unknown"])), "cover": f"https://covers.openlibrary.org/b/id/{cover_id}-M.jpg" if cover_id else "", "isbn": doc.get("isbn", ["Unknown"])[0] if "isbn" in doc else "Unknown"})
     except: pass
-
     seen = set()
     unique = []
     for b in results:
@@ -172,57 +148,42 @@ with tab1:
     img_file = st.camera_input("Scan Barcode")
     scanned = decode_barcode(img_file) if img_file else ""
     if scanned: st.success(f"Scanned: {scanned}")
-
-    default_v = scanned if scanned else ""
-    q = st.text_input("Title, Author, or ISBN", value=default_v)
-    
+    q = st.text_input("Title, Author, or ISBN", value=scanned if scanned else "")
     if st.button("Search Books", type="primary") and q:
         with st.spinner("Searching..."):
             st.session_state['s_res'] = search_books_hybrid(q)
-    
     if 's_res' in st.session_state:
         for i, b in enumerate(st.session_state['s_res']):
             with st.container():
                 c1, c2, c3 = st.columns([1, 3, 1])
-                with c1:
-                    if b['cover']: st.image(b['cover'], width=60)
-                    else: st.write("📘")
-                with c2: 
-                    st.markdown(f"**{b['title']}**")
-                    st.caption(f"{b['author']} | Source: {b['source']}")
+                with c1: st.image(b['cover'], width=60) if b['cover'] else st.write("📘")
+                with c2: st.markdown(f"**{b['title']}**"); st.caption(b['author'])
                 with c3:
                     if st.button("Add", key=f"a_{i}"):
                         sheet.append_row([st.session_state['username'], b['isbn'], b['title'], b['author'], "Available", "", "", b['cover'], ""])
                         st.toast("✅ Added!")
                 st.divider()
-
     with st.expander("Add Book Manually"):
         with st.form("manual_add"):
             mt, ma = st.text_input("Title*"), st.text_input("Author*")
-            mi, mc = st.text_input("ISBN"), st.text_input("Cover URL")
             if st.form_submit_button("Save"):
                 if mt and ma:
-                    sheet.append_row([st.session_state['username'], mi if mi else "N/A", mt, ma, "Available", "", "", mc, ""])
+                    sheet.append_row([st.session_state['username'], "N/A", mt, ma, "Available", "", "", "", ""])
                     st.success("Added!")
-                else: st.error("Required fields missing.")
+                else: st.error("Missing fields.")
 
 with tab3:
     st.header("Active Reading")
     raw_df = pd.DataFrame(sheet.get_all_records())
-    
     if not raw_df.empty and 'Owner' in raw_df.columns:
         reading = raw_df[(raw_df['Owner'].astype(str).str.lower() == st.session_state['username']) & (raw_df['Status'] == "Reading")]
-        
-        if reading.empty:
-            st.info("No active books. Mark a book as 'Reading' in your collection to see it here!")
+        if reading.empty: st.info("No active books.")
         else:
             prog_vals = ["10% or less", "20%", "30%", "40%", "Half way there", "60%", "70%", "80%", "Almost done", "Finished"]
             for idx, row in reading.iterrows():
                 with st.container():
                     cA, cB = st.columns([1, 3])
-                    with cA:
-                        if str(row['Cover_URL']).startswith("http"): st.image(row['Cover_URL'], width=80)
-                        else: st.write("📖")
+                    with cA: st.image(row['Cover_URL'], width=80) if str(row['Cover_URL']).startswith("http") else st.write("📖")
                     with cB:
                         st.subheader(row['Title'])
                         cur_p = row['Reading_Progress'] if row['Reading_Progress'] in prog_vals else "10% or less"
@@ -231,10 +192,8 @@ with tab3:
                             if st.form_submit_button("Save"):
                                 row_num = idx + 2
                                 if new_p == "Finished":
-                                    sheet.update_cell(row_num, 5, "Available")
-                                    sheet.update_cell(row_num, 9, "")
-                                else:
-                                    sheet.update_cell(row_num, 9, new_p)
+                                    sheet.update_cell(row_num, 5, "Available"); sheet.update_cell(row_num, 9, "")
+                                else: sheet.update_cell(row_num, 9, new_p)
                                 st.rerun()
                 st.divider()
 
@@ -250,41 +209,46 @@ with tab2:
                 sel = st.selectbox("Select book:", d_books['Title'].tolist())
                 match = df[(df['Title'] == sel) & (df['Owner'].astype(str).str.lower() == st.session_state['username'])]
                 if not match.empty:
-                    idx = match.index[0]
-                    row_n = idx + 2
+                    idx, row_n = match.index[0], match.index[0] + 2
                     st.divider()
                     col_i, col_f = st.columns([1, 2])
                     with col_i:
                         cv = df.loc[idx, 'Cover_URL']
-                        if str(cv).startswith("http"): st.image(cv, width=120)
-                        else: st.write("📘 No Cover")
+                        st.image(cv, width=120) if str(cv).startswith("http") else st.write("📘 No Cover")
                         st.write("---")
                         if st.button("🗑️ Delete Book"):
-                            sheet.delete_rows(row_n)
-                            st.rerun()
+                            sheet.delete_rows(row_n); st.rerun()
                     with col_f:
+                        # !!! REACTIVE STATUS RADIO (Outside the form) !!!
+                        current_db_status = df.loc[idx, 'Status']
+                        status_options = ["Available", "Borrowed", "Reading"]
+                        
+                        new_status = st.radio(
+                            "Status", 
+                            status_options, 
+                            index=status_options.index(current_db_status) if current_db_status in status_options else 0
+                        )
+                        
+                        # These fields now react INSTANTLY to the radio button above
+                        is_borrowed = (new_status == "Borrowed")
+                        
                         with st.form("loan_form"):
                             st.markdown(f"### {sel}")
-                            n_s = st.radio("Status", ["Available", "Borrowed", "Reading"], index=["Available", "Borrowed", "Reading"].index(df.loc[idx, 'Status']) if df.loc[idx, 'Status'] in ["Available", "Borrowed", "Reading"] else 0)
                             
-                            # MODIFIED PORTION: Activate Borrower and Due Date when Borrowed is selected
-                            n_b = st.text_input("Borrower", value=df.loc[idx, 'Borrower'], disabled=(n_s != "Borrowed"))
+                            n_borrower = st.text_input("Borrower", value=df.loc[idx, 'Borrower'], disabled=not is_borrowed)
                             
-                            # Handle Date conversion safely
-                            current_due_str = str(df.loc[idx, 'Due_Date'])
                             try:
-                                default_date = datetime.strptime(current_due_str, "%Y-%m-%d").date()
+                                default_date = datetime.strptime(str(df.loc[idx, 'Due_Date']), "%Y-%m-%d").date()
                             except:
                                 default_date = datetime.now().date()
                             
-                            n_d = st.date_input("Due Date", value=default_date, disabled=(n_s != "Borrowed"))
+                            n_due = st.date_input("Due Date", value=default_date, disabled=not is_borrowed)
                             
-                            if st.form_submit_button("Save"):
-                                sheet.update_cell(row_n, 5, n_s)
-                                sheet.update_cell(row_n, 6, n_b if n_s == "Borrowed" else "")
-                                # Update Column 7 (Due_Date)
-                                sheet.update_cell(row_n, 7, str(n_d) if n_s == "Borrowed" else "")
-                                if n_s == "Reading": sheet.update_cell(row_n, 9, "10% or less")
+                            if st.form_submit_button("Save Changes"):
+                                sheet.update_cell(row_n, 5, new_status)
+                                sheet.update_cell(row_n, 6, n_borrower if is_borrowed else "")
+                                sheet.update_cell(row_n, 7, str(n_due) if is_borrowed else "")
+                                if new_status == "Reading": sheet.update_cell(row_n, 9, "10% or less")
                                 st.rerun()
             st.divider()
             st.dataframe(my_books[['Title', 'Author', 'Status', 'Borrower', 'Due_Date', 'Reading_Progress']], use_container_width=True, hide_index=True)
