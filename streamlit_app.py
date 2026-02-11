@@ -32,28 +32,34 @@ except Exception as e:
     st.error(f"Database Error: {e}")
     st.stop()
 
-# --- 2. SEARCH LOGIC (ROBUST) ---
+# --- 2. AGGREGATOR SEARCH ENGINE ---
 def search_books_hybrid(query):
-    found_books = []
+    results = []
     clean_query = str(query).strip()
     
-    # --- STRATEGY 1: GOOGLE BOOKS (Primary) ---
+    # Check if it looks like an ISBN (Digits only)
+    is_isbn = clean_query.replace("-", "").isdigit()
+
+    # --- SOURCE 1: GOOGLE BOOKS ---
     try:
-        url = f"https://www.googleapis.com/books/v1/volumes?q={clean_query}&maxResults=20"
+        # We ask for 15 results from Google
+        url = f"https://www.googleapis.com/books/v1/volumes?q={clean_query}&maxResults=15"
         response = requests.get(url)
         if response.status_code == 200:
             data = response.json()
             if "items" in data:
                 for item in data["items"]:
                     info = item.get("volumeInfo", {})
+                    
+                    # Find ISBN
                     isbn = "Unknown"
                     for ident in info.get("industryIdentifiers", []):
                         if ident["type"] == "ISBN_13":
                             isbn = ident["identifier"]
                             break
                     
-                    found_books.append({
-                        "source": "Google",
+                    results.append({
+                        "source": "Google Books",
                         "title": info.get("title", "Unknown"),
                         "author": ", ".join(info.get("authors", ["Unknown"])),
                         "cover": info.get("imageLinks", {}).get("thumbnail", ""),
@@ -63,49 +69,63 @@ def search_books_hybrid(query):
     except:
         pass
 
-    # --- STRATEGY 2: OPEN LIBRARY (Backup) ---
-    # If Google failed (empty list), we ask Open Library
-    if not found_books:
-        try:
-            # If it's a number (ISBN)
-            if clean_query.replace("-", "").isdigit():
-                isbn_clean = clean_query.replace("-", "")
-                url = f"https://openlibrary.org/api/books?bibkeys=ISBN:{isbn_clean}&format=json&jscmd=data"
-                resp = requests.get(url).json()
-                key = f"ISBN:{isbn_clean}"
-                if key in resp:
-                    info = resp[key]
-                    found_books.append({
+    # --- SOURCE 2: OPEN LIBRARY ---
+    # We ALWAYS run this for text searches now (not just as backup)
+    # This doubles our chances of finding relevant books
+    try:
+        if is_isbn:
+            # ISBN Mode (Strict)
+            isbn_clean = clean_query.replace("-", "")
+            url = f"https://openlibrary.org/api/books?bibkeys=ISBN:{isbn_clean}&format=json&jscmd=data"
+            resp = requests.get(url).json()
+            key = f"ISBN:{isbn_clean}"
+            if key in resp:
+                info = resp[key]
+                results.insert(0, { # Put exact ISBN match at top
+                    "source": "OpenLibrary",
+                    "title": info.get("title", "Unknown"),
+                    "author": ", ".join([a["name"] for a in info.get("authors", [])]),
+                    "cover": info.get("cover", {}).get("medium", ""),
+                    "isbn": isbn_clean,
+                    "year": info.get("publish_date", "")
+                })
+        else:
+            # Text Mode (Broad)
+            # We ask for top 15 from Open Library too
+            search_url = f"https://openlibrary.org/search.json?q={clean_query}&limit=15"
+            resp = requests.get(search_url).json()
+            for doc in resp.get("docs", []):
+                cover_id = doc.get("cover_i")
+                cover_url = f"https://covers.openlibrary.org/b/id/{cover_id}-M.jpg" if cover_id else ""
+                
+                # Only add if it has a title
+                if doc.get("title"):
+                    results.append({
                         "source": "OpenLibrary",
-                        "title": info.get("title", "Unknown"),
-                        "author": ", ".join([a["name"] for a in info.get("authors", [])]),
-                        "cover": info.get("cover", {}).get("medium", ""),
-                        "isbn": isbn_clean,
-                        "year": info.get("publish_date", "")
-                    })
-            
-            # If it's Text (Title/Author) - THIS IS THE NEW PART
-            else:
-                # We use the General Search API
-                search_url = f"https://openlibrary.org/search.json?q={clean_query}&limit=15"
-                resp = requests.get(search_url).json()
-                for doc in resp.get("docs", []):
-                    # Open Library uses 'cover_i' for images
-                    cover_id = doc.get("cover_i")
-                    cover_url = f"https://covers.openlibrary.org/b/id/{cover_id}-M.jpg" if cover_id else ""
-                    
-                    found_books.append({
-                        "source": "OpenLibrary",
-                        "title": doc.get("title", "Unknown"),
+                        "title": doc.get("title"),
                         "author": ", ".join(doc.get("author_name", ["Unknown"])),
                         "cover": cover_url,
                         "isbn": doc.get("isbn", ["Unknown"])[0] if "isbn" in doc else "Unknown",
                         "year": str(doc.get("first_publish_year", ""))
                     })
-        except Exception as e:
-            print(f"OL Error: {e}")
+    except:
+        pass
 
-    return found_books
+    # --- CLEANUP & SORTING ---
+    # 1. Remove duplicates (based on Title + Author) to keep list clean
+    seen = set()
+    unique_results = []
+    for book in results:
+        # Create a unique "fingerprint" for the book
+        fingerprint = (book['title'].lower(), book['author'].lower())
+        if fingerprint not in seen:
+            seen.add(fingerprint)
+            unique_results.append(book)
+    
+    # 2. Sort: Put books WITH covers at the top (they look better)
+    unique_results.sort(key=lambda x: x['cover'] == "", reverse=False)
+
+    return unique_results
 
 def decode_barcode(image_file):
     try:
@@ -136,7 +156,6 @@ with tab1:
     default = scanned_code if scanned_code else ""
     user_query = st.text_input("Enter Title, Author, or ISBN", value=default)
 
-    # Search Button
     if st.button("Search", type="primary"):
         if user_query:
             with st.spinner(f"Searching for '{user_query}'..."):
@@ -144,7 +163,7 @@ with tab1:
                 st.session_state['results'] = results
                 
                 if not results:
-                    st.error("No books found. Try checking the spelling.")
+                    st.error("No books found.")
         else:
             st.warning("Please enter text to search.")
 
@@ -157,20 +176,17 @@ with tab1:
             with st.container():
                 col1, col2, col3 = st.columns([1, 3, 2])
                 
-                # Image
                 with col1:
                     if book['cover']:
                         st.image(book['cover'], width=60)
                     else:
                         st.write("📘")
                 
-                # Text
                 with col2:
                     st.markdown(f"**{book['title']}**")
                     st.caption(f"{book['author']}")
-                    st.caption(f"Year: {book['year']} | Source: {book['source']}")
+                    st.caption(f"Source: {book['source']}")
                 
-                # Button
                 with col3:
                     if st.button("Add", key=f"add_{i}"):
                         try:
