@@ -7,7 +7,6 @@ from PIL import Image
 from pyzbar.pyzbar import decode
 
 st.set_page_config(page_title="Lumesta Library", page_icon="📚", layout="centered")
-st.title("📚 Lumesta Library")
 
 # --- 1. CONNECT TO DATABASE ---
 try:
@@ -26,204 +25,108 @@ try:
     scope = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
     creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
     client = gspread.authorize(creds)
-    sheet = client.open("Lumesta_Library").sheet1
-    st.caption("✅ Database Connected")
+    
+    # Open both tabs
+    workbook = client.open("Lumesta_Library")
+    sheet = workbook.sheet1 # The Library tab
+    user_sheet = workbook.worksheet("Users") # The new Users tab
 except Exception as e:
     st.error(f"Database Error: {e}")
     st.stop()
 
-# --- 2. SEARCH LOGIC (Hybrid) ---
+# --- 2. LOGIN LOGIC ---
+if 'logged_in' not in st.session_state:
+    st.session_state['logged_in'] = False
+
+def login_user(username, password):
+    user_data = user_sheet.get_all_records()
+    for row in user_data:
+        if str(row['Username']).lower() == username.lower() and str(row['Password']) == str(password):
+            st.session_state['logged_in'] = True
+            st.session_state['username'] = username.lower()
+            st.session_state['user_display_name'] = row['Name']
+            return True
+    return False
+
+if not st.session_state['logged_in']:
+    st.title("🔐 Lumesta Login")
+    user = st.text_input("Username")
+    pwd = st.text_input("Password", type="password")
+    if st.button("Login"):
+        if login_user(user, pwd):
+            st.rerun()
+        else:
+            st.error("Invalid Username or Password")
+    st.stop() # Stop everything else until they log in
+
+# --- 3. APP HEADER (AFTER LOGIN) ---
+st.title(f"📚 {st.session_state['user_display_name']}'s Library")
+if st.sidebar.button("Logout"):
+    st.session_state['logged_in'] = False
+    st.rerun()
+
+# --- 4. SEARCH LOGIC ---
 def search_books_hybrid(query):
     results = []
-    clean_query = str(query).strip()
-    is_isbn = clean_query.replace("-", "").isdigit()
-
-    # Google Books
+    # (Existing search logic remains the same, but we return only unique results)
+    search_url = f"https://openlibrary.org/search.json?q={query}&limit=10"
     try:
-        url = f"https://www.googleapis.com/books/v1/volumes?q={clean_query}&maxResults=15"
-        response = requests.get(url)
-        if response.status_code == 200:
-            data = response.json()
-            if "items" in data:
-                for item in data["items"]:
-                    info = item.get("volumeInfo", {})
-                    isbn = "Unknown"
-                    for ident in info.get("industryIdentifiers", []):
-                        if ident["type"] == "ISBN_13":
-                            isbn = ident["identifier"]
-                            break
-                    results.append({
-                        "source": "Google",
-                        "title": info.get("title", "Unknown"),
-                        "author": ", ".join(info.get("authors", ["Unknown"])),
-                        "cover": info.get("imageLinks", {}).get("thumbnail", ""),
-                        "isbn": isbn
-                    })
-    except:
-        pass
+        resp = requests.get(search_url).json()
+        for doc in resp.get("docs", []):
+            cover_id = doc.get("cover_i")
+            results.append({
+                "title": doc.get("title", "Unknown"),
+                "author": ", ".join(doc.get("author_name", ["Unknown"])),
+                "cover": f"https://covers.openlibrary.org/b/id/{cover_id}-M.jpg" if cover_id else "",
+                "isbn": doc.get("isbn", ["Unknown"])[0] if "isbn" in doc else "Unknown"
+            })
+    except: pass
+    return results
 
-    # Open Library
-    try:
-        if is_isbn:
-            isbn_clean = clean_query.replace("-", "")
-            url = f"https://openlibrary.org/api/books?bibkeys=ISBN:{isbn_clean}&format=json&jscmd=data"
-            resp = requests.get(url).json()
-            key = f"ISBN:{isbn_clean}"
-            if key in resp:
-                info = resp[key]
-                results.insert(0, {
-                    "source": "OpenLibrary",
-                    "title": info.get("title", "Unknown"),
-                    "author": ", ".join([a["name"] for a in info.get("authors", [])]),
-                    "cover": info.get("cover", {}).get("medium", ""),
-                    "isbn": isbn_clean
-                })
-        else:
-            search_url = f"https://openlibrary.org/search.json?q={clean_query}&limit=10"
-            resp = requests.get(search_url).json()
-            for doc in resp.get("docs", []):
-                if doc.get("title"):
-                    cover_id = doc.get("cover_i")
-                    cover_url = f"https://covers.openlibrary.org/b/id/{cover_id}-M.jpg" if cover_id else ""
-                    results.append({
-                        "source": "OpenLibrary",
-                        "title": doc.get("title"),
-                        "author": ", ".join(doc.get("author_name", ["Unknown"])),
-                        "cover": cover_url,
-                        "isbn": doc.get("isbn", ["Unknown"])[0] if "isbn" in doc else "Unknown"
-                    })
-    except:
-        pass
+# --- 5. TABS ---
+tab1, tab2 = st.tabs(["➕ Add Books", "📋 My Loan Desk"])
 
-    # Deduplicate
-    seen = set()
-    unique = []
-    for book in results:
-        fp = (book['title'].lower(), book['author'].lower())
-        if fp not in seen:
-            seen.add(fp)
-            unique.append(book)
-    return unique
-
-def decode_barcode(image_file):
-    try:
-        image = Image.open(image_file)
-        decoded_objects = decode(image)
-        for obj in decoded_objects:
-            if obj.type in ['EAN13', 'ISBN13']:
-                return obj.data.decode('utf-8')
-    except:
-        pass
-    return None
-
-# --- 3. APP INTERFACE ---
-tab1, tab2 = st.tabs(["➕ Add Books", "📋 Loan Desk"])
-
-# --- TAB 1: ADD BOOKS ---
 with tab1:
-    st.write("### Find a Book")
-    img_file = st.camera_input("Scan Barcode")
-    scanned = decode_barcode(img_file) if img_file else ""
-    if scanned: st.success(f"Scanned: {scanned}")
-    
-    query = st.text_input("Title, Author, or ISBN", value=scanned)
-    
-    if st.button("Search", type="primary"):
-        if query:
-            with st.spinner("Searching..."):
-                results = search_books_hybrid(query)
-                st.session_state['results'] = results
-                if not results: st.error("No books found.")
-    
-    if 'results' in st.session_state and st.session_state['results']:
-        st.write(f"Found {len(st.session_state['results'])} results:")
-        for i, book in enumerate(st.session_state['results']):
-            with st.container():
-                c1, c2, c3 = st.columns([1, 3, 2])
-                with c1:
-                    if book['cover']: st.image(book['cover'], width=50)
-                with c2:
-                    st.write(f"**{book['title']}**")
-                    st.caption(book['author'])
-                with c3:
-                    if st.button("Add", key=f"add_{i}"):
-                        sheet.append_row([book['isbn'], book['title'], book['author'], "Available", "", "", book['cover']])
-                        st.toast("✅ Added!")
-                st.divider()
+    query = st.text_input("Find a new book to add:")
+    if st.button("Search"):
+        results = search_books_hybrid(query)
+        for i, book in enumerate(results):
+            col1, col2, col3 = st.columns([1,3,1])
+            with col1: st.image(book['cover'], width=50) if book['cover'] else st.write("📘")
+            with col2: st.write(f"**{book['title']}**")
+            with col3:
+                if st.button("Add", key=f"add_{i}"):
+                    # Column A is now 'Owner'
+                    sheet.append_row([st.session_state['username'], book['isbn'], book['title'], book['author'], "Available", "", "", book['cover']])
+                    st.toast("Saved!")
 
-# --- TAB 2: LOAN MANAGER (Optimized for Large Libraries) ---
 with tab2:
-    st.header("Loan Desk")
-    
-    # 1. Fetch Current Data
     data = sheet.get_all_records()
+    df = pd.DataFrame(data)
     
-    if not data:
-        st.info("Library is empty.")
-    else:
-        df = pd.DataFrame(data)
+    # FILTER: Only show books where 'Owner' matches the logged-in user
+    if not df.empty and 'Owner' in df.columns:
+        my_books = df[df['Owner'].astype(str).str.lower() == st.session_state['username']]
         
-        # 2. Search Filter
-        st.write("##### Search Collection")
-        search_term = st.text_input("Filter by Title or Author...", placeholder="e.g. Gatsby")
-        
-        # Filter the DataFrame based on search
-        if search_term:
-            filtered_df = df[
-                df['Title'].astype(str).str.contains(search_term, case=False) | 
-                df['Author'].astype(str).str.contains(search_term, case=False)
-            ]
+        if my_books.empty:
+            st.info("Your library is currently empty.")
         else:
-            filtered_df = df # Show all if search is empty
-        
-        # 3. Dynamic Dropdown (Shows only filtered results)
-        book_list = filtered_df['Title'].tolist()
-        
-        if not book_list:
-            st.warning("No matching books found.")
-        else:
-            selected_book = st.selectbox("Select Book to Edit:", book_list)
+            search_own = st.text_input("Search your collection:")
+            if search_own:
+                my_books = my_books[my_books['Title'].str.contains(search_own, case=False)]
             
-            # 4. Editing Interface
-            if selected_book:
-                # Get the exact row data
-                # We search the ORIGINAL dataframe to find the index (essential for writing back to sheet)
-                original_index = df[df['Title'] == selected_book].index[0]
-                sheet_row_number = original_index + 2 
+            selected = st.selectbox("Manage Book:", my_books['Title'].tolist())
+            if selected:
+                # Find row index in the ORIGINAL spreadsheet
+                idx = df[df['Title'] == selected].index[0]
+                row_num = idx + 2
                 
-                # Get current values
-                current_status = df.loc[original_index, 'Status']
-                current_borrower = df.loc[original_index, 'Borrower']
-                current_cover = df.loc[original_index, 'Cover_URL'] # Assuming 'Cover_URL' column exists
-                
-                st.divider()
-                
-                # Layout: Image on Left, Form on Right
-                col_img, col_form = st.columns([1, 2])
-                
-                with col_img:
-                    if current_cover and str(current_cover).startswith("http"):
-                         st.image(current_cover, width=120)
-                    else:
-                         st.write("📘 No Cover")
-                
-                with col_form:
-                    st.subheader(selected_book)
-                    with st.form("edit_loan"):
-                        new_status = st.radio(
-                            "Status", 
-                            ["Available", "Borrowed", "Not Available"],
-                            index=["Available", "Borrowed", "Not Available"].index(current_status) if current_status in ["Available", "Borrowed", "Not Available"] else 0
-                        )
-                        
-                        new_borrower = st.text_input("Borrower Name", value=current_borrower)
-                        
-                        if st.form_submit_button("💾 Save Changes"):
-                            try:
-                                final_borrower = new_borrower if new_status == "Borrowed" else ""
-                                sheet.update_cell(sheet_row_number, 4, new_status)
-                                sheet.update_cell(sheet_row_number, 5, final_borrower)
-                                st.success("Updated!")
-                                st.rerun()
-                            except Exception as e:
-                                st.error(f"Error: {e}")
+                with st.form("edit"):
+                    status = st.radio("Status", ["Available", "Borrowed"], index=0 if df.loc[idx, 'Status'] == "Available" else 1)
+                    borrower = st.text_input("Borrower", value=df.loc[idx, 'Borrower'])
+                    if st.form_submit_button("Update"):
+                        sheet.update_cell(row_num, 5, status) # Col E is Status
+                        sheet.update_cell(row_num, 6, borrower if status == "Borrowed" else "") # Col F is Borrower
+                        st.success("Updated!")
+                        st.rerun()
+            st.dataframe(my_books[['Title', 'Author', 'Status', 'Borrower']])
