@@ -5,83 +5,76 @@ import requests
 import pandas as pd
 from datetime import date
 
-# 1. SETUP
 st.set_page_config(page_title="Lumesta Library", page_icon="📚")
 st.title("📚 Lumesta Library")
 
-# 2. CONNECT TO DATABASE
+# --- DEBUG MODE CONNECT ---
 try:
-    creds_dict = dict(st.secrets["gcp_service_account"])
+    # We access the secrets DIRECTLY this time to avoid dictionary errors
+    creds_dict = {
+        "type": st.secrets["gcp_service_account"]["type"],
+        "project_id": st.secrets["gcp_service_account"]["project_id"],
+        "private_key_id": st.secrets["gcp_service_account"]["private_key_id"],
+        "private_key": st.secrets["gcp_service_account"]["private_key"],
+        "client_email": st.secrets["gcp_service_account"]["client_email"],
+        "client_id": st.secrets["gcp_service_account"]["client_id"],
+        "auth_uri": st.secrets["gcp_service_account"]["auth_uri"],
+        "token_uri": st.secrets["gcp_service_account"]["token_uri"],
+        "auth_provider_x509_cert_url": st.secrets["gcp_service_account"]["auth_provider_x509_cert_url"],
+        "client_x509_cert_url": st.secrets["gcp_service_account"]["client_x509_cert_url"]
+    }
+    
     scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
     creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
     client = gspread.authorize(creds)
     sheet = client.open("Lumesta_Library").sheet1
+    st.caption("✅ Connected to Google Sheets")
 except Exception as e:
-    st.error("Database Connection Error. Check Secrets.")
+    st.error(f"❌ DATABASE ERROR: {e}")
     st.stop()
 
-# 3. SMARTER SEARCH FUNCTION
+# --- SEARCH FUNCTION ---
 def fetch_book_metadata(query):
-    # Step A: Clean the input
     clean_query = str(query).replace("-", "").strip()
     
-    # Step B: Try Strict ISBN Search
+    # 1. Try Strict ISBN
     url = f"https://www.googleapis.com/books/v1/volumes?q=isbn:{clean_query}"
-    response = requests.get(url)
-    data = response.json()
-    
-    # Step C: If strict fails, try General Search (The Fallback)
-    if "items" not in data:
-        st.caption(f"Strict search failed for '{clean_query}'. Trying general search...")
-        url = f"https://www.googleapis.com/books/v1/volumes?q={clean_query}"
+    try:
         response = requests.get(url)
         data = response.json()
-    
-    # Step D: Process Result
-    if "items" in data:
-        volume_info = data["items"][0]["volumeInfo"]
-        return {
-            "title": volume_info.get("title", "Unknown Title"),
-            "author": ", ".join(volume_info.get("authors", ["Unknown Author"])),
-            "cover": volume_info.get("imageLinks", {}).get("thumbnail", "")
-        }
-    return None
+        
+        # 2. Try General Search if Strict fails
+        if "items" not in data:
+            url = f"https://www.googleapis.com/books/v1/volumes?q={clean_query}"
+            response = requests.get(url)
+            data = response.json()
+            
+        if "items" in data:
+            volume_info = data["items"][0]["volumeInfo"]
+            return {
+                "title": volume_info.get("title", "Unknown Title"),
+                "author": ", ".join(volume_info.get("authors", ["Unknown Author"])),
+                "cover": volume_info.get("imageLinks", {}).get("thumbnail", "")
+            }
+        return None
+    except Exception as e:
+        st.error(f"Search API Error: {e}")
+        return None
 
-# 4. APP INTERFACE
-tab1, tab2 = st.tabs(["➕ Add New Book", "📖 View Library"])
+# --- UI ---
+user_input = st.text_input("Enter ISBN or Title (e.g. 9780143038092)", "")
 
-with tab1:
-    st.write("### Add a Book")
-    
-    # Simple Input Box
-    user_input = st.text_input("Enter ISBN or Book Title")
-
-    if st.button("Search"):
-        if user_input:
-            with st.spinner(f"Searching for '{user_input}'..."):
-                book = fetch_book_metadata(user_input)
-                
-            if book:
-                col1, col2 = st.columns([1, 3])
-                with col1:
-                    if book['cover']:
-                        st.image(book['cover'], width=100)
-                with col2:
-                    st.subheader(book['title'])
-                    st.write(f"**Author:** {book['author']}")
-                
-                if st.button("Confirm Add"):
-                    sheet.append_row([user_input, book['title'], book['author'], "Available", "", "", book['cover']])
-                    st.balloons()
-                    st.success(f"Added '{book['title']}'!")
-            else:
-                st.error(f"Could not find any book matching '{user_input}'. Try typing the title manually.")
-                
-                # Manual Fallback
-                with st.expander("Enter Details Manually"):
-                    with st.form("manual_fail"):
-                        m_title = st.text_input("Title")
-                        m_author = st.text_input("Author")
-                        if st.form_submit_button("Save Manual Entry"):
-                            sheet.append_row([user_input, m_title, m_author, "Available", "", "", ""])
-                            st.success("Saved manually!")
+if st.button("Search"):
+    if user_input:
+        book = fetch_book_metadata(user_input)
+        
+        if book:
+            st.image(book['cover'], width=120)
+            st.subheader(book['title'])
+            st.write(f"**Author:** {book['author']}")
+            
+            if st.button("Add to Library"):
+                sheet.append_row([user_input, book['title'], book['author'], "Available", "", "", book['cover']])
+                st.success("Added!")
+        else:
+            st.error(f"Not found: '{user_input}'. Try typing the title manually.")
