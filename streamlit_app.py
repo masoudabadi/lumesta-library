@@ -110,7 +110,6 @@ def search_books_hybrid(query):
     clean_query = str(query).strip()
     is_isbn = clean_query.replace("-", "").isdigit()
 
-    # Part A: Google Books
     try:
         url = f"https://www.googleapis.com/books/v1/volumes?q={clean_query}&maxResults=15"
         data = requests.get(url).json()
@@ -131,7 +130,6 @@ def search_books_hybrid(query):
                 })
     except: pass
 
-    # Part B: Open Library
     try:
         if is_isbn:
             isbn_clean = clean_query.replace("-", "")
@@ -173,9 +171,8 @@ def search_books_hybrid(query):
 tab1, tab2 = st.tabs(["➕ Add Books", "📋 My Collection"])
 
 with tab1:
-    st.subheader("Scan or Search")
+    st.subheader("Option A: Scan or Search")
     
-    # Camera Input
     img_file = st.camera_input("Scan Barcode")
     scanned_code = ""
     if img_file:
@@ -183,9 +180,8 @@ with tab1:
         if scanned_code:
             st.success(f"Scanned: {scanned_code}")
         else:
-            st.warning("Barcode not found. Try a clearer angle.")
+            st.warning("Barcode not found.")
 
-    # Search Box (fills with scanned code if available)
     default_val = scanned_code if scanned_code else ""
     q = st.text_input("Title, Author, or ISBN", value=default_val)
     
@@ -198,18 +194,41 @@ with tab1:
             with st.container():
                 c1, c2, c3 = st.columns([1, 3, 1])
                 with c1:
-                    if b['cover']:
-                        st.image(b['cover'], width=60)
-                    else:
-                        st.write("📘")
+                    if b['cover']: st.image(b['cover'], width=60)
+                    else: st.write("📘")
                 with c2: 
                     st.markdown(f"**{b['title']}**")
                     st.caption(f"{b['author']} | Source: {b['source']}")
                 with c3:
                     if st.button("Add", key=f"a_{i}"):
                         sheet.append_row([st.session_state['username'], b['isbn'], b['title'], b['author'], "Available", "", "", b['cover']])
-                        st.toast(f"✅ Added!")
+                        st.toast("✅ Added!")
                 st.divider()
+
+    # --- NEW MANUAL ADD SECTION ---
+    st.write("---")
+    with st.expander("Option B: Add Book Manually"):
+        with st.form("manual_add_form"):
+            m_title = st.text_input("Book Title*")
+            m_author = st.text_input("Author Name*")
+            m_isbn = st.text_input("ISBN (optional)")
+            m_cover = st.text_input("Cover Image URL (optional)")
+            
+            if st.form_submit_button("Add Manually"):
+                if m_title and m_author:
+                    sheet.append_row([
+                        st.session_state['username'], 
+                        m_isbn if m_isbn else "N/A", 
+                        m_title, 
+                        m_author, 
+                        "Available", 
+                        "", 
+                        "", 
+                        m_cover
+                    ])
+                    st.success(f"Successfully added '{m_title}'!")
+                else:
+                    st.error("Title and Author are required.")
 
 with tab2:
     st.subheader("Manage Your Books")
@@ -234,20 +253,14 @@ with tab2:
                     
                     st.divider()
                     colA, colB = st.columns([1, 2])
-                    
                     with colA:
                         cv = df_raw.loc[idx, 'Cover_URL']
-                        if str(cv).startswith("http"):
-                            st.image(cv, width=120)
-                        else:
-                            st.write("📘 No Cover")
-                        
-                        st.markdown("---")
+                        if str(cv).startswith("http"): st.image(cv, width=120)
+                        else: st.write("📘 No Cover")
+                        st.write("---")
                         if st.button("🗑️ Delete Book", type="secondary"):
                             sheet.delete_rows(row_num)
-                            st.warning(f"Deleted '{sel}'")
                             st.rerun()
-
                     with colB:
                         with st.form("edit_loan"):
                             st.markdown(f"### {sel}")
@@ -256,9 +269,6 @@ with tab2:
                             if st.form_submit_button("Save Changes"):
                                 sheet.update_cell(row_num, 5, ns)
                                 sheet.update_cell(row_num, 6, nb if ns=="Borrowed" else "")
-                                st.success("Updated!")
                                 st.rerun()
-            
             st.divider()
-            st.subheader("Full Collection")
             st.dataframe(my_books[['Title', 'Author', 'Status', 'Borrower']], use_container_width=True, hide_index=True)
