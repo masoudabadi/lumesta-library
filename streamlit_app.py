@@ -32,66 +32,79 @@ except Exception as e:
     st.error(f"Database Error: {e}")
     st.stop()
 
-# --- 2. HYBRID SEARCH LOGIC ---
+# --- 2. SEARCH LOGIC (ROBUST) ---
 def search_books_hybrid(query):
     found_books = []
     clean_query = str(query).strip()
     
-    # STRATEGY A: Google Books (Best for Title/Author lists)
+    # --- STRATEGY 1: GOOGLE BOOKS (Primary) ---
     try:
         url = f"https://www.googleapis.com/books/v1/volumes?q={clean_query}&maxResults=20"
         response = requests.get(url)
-        data = response.json()
-        
-        if "items" in data:
-            for item in data["items"]:
-                info = item.get("volumeInfo", {})
-                
-                # Get ISBN safely
-                isbn = "Unknown"
-                for ident in info.get("industryIdentifiers", []):
-                    if ident["type"] == "ISBN_13":
-                        isbn = ident["identifier"]
-                        break
-                
-                book = {
-                    "source": "Google",
-                    "title": info.get("title", "Unknown Title"),
-                    "author": ", ".join(info.get("authors", ["Unknown Author"])),
-                    "cover": info.get("imageLinks", {}).get("thumbnail", ""),
-                    "isbn": isbn,
-                    "published": info.get("publishedDate", "")[:4]
-                }
-                found_books.append(book)
+        if response.status_code == 200:
+            data = response.json()
+            if "items" in data:
+                for item in data["items"]:
+                    info = item.get("volumeInfo", {})
+                    isbn = "Unknown"
+                    for ident in info.get("industryIdentifiers", []):
+                        if ident["type"] == "ISBN_13":
+                            isbn = ident["identifier"]
+                            break
+                    
+                    found_books.append({
+                        "source": "Google",
+                        "title": info.get("title", "Unknown"),
+                        "author": ", ".join(info.get("authors", ["Unknown"])),
+                        "cover": info.get("imageLinks", {}).get("thumbnail", ""),
+                        "isbn": isbn,
+                        "year": info.get("publishedDate", "")[:4]
+                    })
     except:
         pass
 
-    # STRATEGY B: Open Library (Backup for ISBNs)
-    # Only runs if Google failed OR if the query looks like an ISBN
-    # This ensures we catch books that Google misses!
-    if not found_books or clean_query.replace("-", "").isdigit():
-        clean_isbn = clean_query.replace("-", "")
+    # --- STRATEGY 2: OPEN LIBRARY (Backup) ---
+    # If Google failed (empty list), we ask Open Library
+    if not found_books:
         try:
-            url = f"https://openlibrary.org/api/books?bibkeys=ISBN:{clean_isbn}&format=json&jscmd=data"
-            response = requests.get(url)
-            data = response.json()
-            key = f"ISBN:{clean_isbn}"
+            # If it's a number (ISBN)
+            if clean_query.replace("-", "").isdigit():
+                isbn_clean = clean_query.replace("-", "")
+                url = f"https://openlibrary.org/api/books?bibkeys=ISBN:{isbn_clean}&format=json&jscmd=data"
+                resp = requests.get(url).json()
+                key = f"ISBN:{isbn_clean}"
+                if key in resp:
+                    info = resp[key]
+                    found_books.append({
+                        "source": "OpenLibrary",
+                        "title": info.get("title", "Unknown"),
+                        "author": ", ".join([a["name"] for a in info.get("authors", [])]),
+                        "cover": info.get("cover", {}).get("medium", ""),
+                        "isbn": isbn_clean,
+                        "year": info.get("publish_date", "")
+                    })
             
-            if key in data:
-                info = data[key]
-                book = {
-                    "source": "OpenLibrary",
-                    "title": info.get("title", "Unknown"),
-                    "author": ", ".join([a["name"] for a in info.get("authors", [])]),
-                    "cover": info.get("cover", {}).get("medium", ""),
-                    "isbn": clean_isbn,
-                    "published": info.get("publish_date", "")
-                }
-                # Add to the TOP of the list so it's the first thing you see
-                found_books.insert(0, book)
-        except:
-            pass
-            
+            # If it's Text (Title/Author) - THIS IS THE NEW PART
+            else:
+                # We use the General Search API
+                search_url = f"https://openlibrary.org/search.json?q={clean_query}&limit=15"
+                resp = requests.get(search_url).json()
+                for doc in resp.get("docs", []):
+                    # Open Library uses 'cover_i' for images
+                    cover_id = doc.get("cover_i")
+                    cover_url = f"https://covers.openlibrary.org/b/id/{cover_id}-M.jpg" if cover_id else ""
+                    
+                    found_books.append({
+                        "source": "OpenLibrary",
+                        "title": doc.get("title", "Unknown"),
+                        "author": ", ".join(doc.get("author_name", ["Unknown"])),
+                        "cover": cover_url,
+                        "isbn": doc.get("isbn", ["Unknown"])[0] if "isbn" in doc else "Unknown",
+                        "year": str(doc.get("first_publish_year", ""))
+                    })
+        except Exception as e:
+            print(f"OL Error: {e}")
+
     return found_books
 
 def decode_barcode(image_file):
@@ -120,20 +133,18 @@ with tab1:
             st.success(f"Scanned: {scanned_code}")
 
     # Search Box
-    # If the camera found a code, put it in the box. Otherwise leave it empty.
     default = scanned_code if scanned_code else ""
     user_query = st.text_input("Enter Title, Author, or ISBN", value=default)
 
     # Search Button
     if st.button("Search", type="primary"):
         if user_query:
-            # THIS IS THE FIXED LINE:
             with st.spinner(f"Searching for '{user_query}'..."):
                 results = search_books_hybrid(user_query)
                 st.session_state['results'] = results
                 
                 if not results:
-                    st.error("No books found in Google OR OpenLibrary.")
+                    st.error("No books found. Try checking the spelling.")
         else:
             st.warning("Please enter text to search.")
 
@@ -157,7 +168,7 @@ with tab1:
                 with col2:
                     st.markdown(f"**{book['title']}**")
                     st.caption(f"{book['author']}")
-                    st.caption(f"ISBN: {book['isbn']} | Source: {book['source']}")
+                    st.caption(f"Year: {book['year']} | Source: {book['source']}")
                 
                 # Button
                 with col3:
