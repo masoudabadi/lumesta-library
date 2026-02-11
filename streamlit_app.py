@@ -8,8 +8,7 @@ from pyzbar.pyzbar import decode
 
 st.set_page_config(page_title="Lumesta Library", page_icon="📚", layout="centered")
 
-# --- 1. SAFETY BLOCK (Fixes the Error) ---
-# We make sure these exist before doing ANYTHING else
+# --- 1. SAFETY BLOCK ---
 if 'logged_in' not in st.session_state:
     st.session_state['logged_in'] = False
 if 'username' not in st.session_state:
@@ -46,7 +45,6 @@ except Exception as e:
 def login_user(username, password):
     users = user_sheet.get_all_records()
     for user in users:
-        # Check matching username/password
         if str(user['Username']).strip().lower() == username.strip().lower() and str(user['Password']) == str(password):
             return user['Name']
     return None
@@ -55,14 +53,13 @@ def signup_user(username, password, name):
     users = user_sheet.get_all_records()
     for user in users:
         if str(user['Username']).strip().lower() == username.strip().lower():
-            return False # User already exists
+            return False
     user_sheet.append_row([username, password, name])
     return True
 
-# --- 4. LOGIN SCREEN (Gatekeeper) ---
+# --- 4. LOGIN SCREEN ---
 if not st.session_state['logged_in']:
     st.title("📚 Lumesta Library")
-    
     tab_login, tab_signup = st.tabs(["Login", "Create Account"])
     
     with tab_login:
@@ -83,38 +80,29 @@ if not st.session_state['logged_in']:
         with st.form("signup_form"):
             new_user = st.text_input("Choose Username")
             new_pass = st.text_input("Choose Password", type="password")
-            new_name = st.text_input("Full Name (e.g. Masoud)")
+            new_name = st.text_input("Full Name")
             if st.form_submit_button("Sign Up"):
                 if new_user and new_pass and new_name:
                     if signup_user(new_user, new_pass, new_name):
-                        st.success("Account created! logging in...")
+                        st.success("Account created!")
                         st.session_state['logged_in'] = True
                         st.session_state['username'] = new_user.lower()
                         st.session_state['display_name'] = new_name
                         st.rerun()
                     else:
                         st.error("Username taken.")
-                else:
-                    st.warning("Fill all fields.")
-    
-    st.stop() # CRITICAL: Stop here if not logged in
+    st.stop()
 
-# --- 5. MAIN APP (Only runs if Logged In) ---
-
-# Sidebar Logout
+# --- 5. MAIN APP ---
 st.sidebar.title(f"Hi, {st.session_state['display_name']}!")
 if st.sidebar.button("Logout"):
     st.session_state['logged_in'] = False
-    st.session_state['username'] = ""
-    st.session_state['display_name'] = ""
     st.rerun()
 
 st.title(f"{st.session_state['display_name']}'s Library")
 
-# --- HELPER: SEARCH FUNCTION ---
 def search_books_hybrid(query):
     results = []
-    # Google Books
     try:
         url = f"https://www.googleapis.com/books/v1/volumes?q={query}&maxResults=15"
         data = requests.get(url).json()
@@ -133,21 +121,10 @@ def search_books_hybrid(query):
                     "isbn": isbn
                 })
     except: pass
-    
-    # Deduplicate
-    unique = []
-    seen = set()
-    for r in results:
-        fp = r['title'].lower()
-        if fp not in seen:
-            seen.add(fp)
-            unique.append(r)
-    return unique
+    return results
 
-# --- TABS ---
 tab1, tab2 = st.tabs(["➕ Add Books", "📋 My Collection"])
 
-# Tab 1: Add
 with tab1:
     st.subheader("Add to Your Collection")
     query = st.text_input("Search Title, Author, or ISBN")
@@ -159,73 +136,60 @@ with tab1:
         for i, book in enumerate(st.session_state['search_results']):
             with st.container():
                 c1, c2, c3 = st.columns([1, 3, 1])
-                with c1:
-                    st.image(book['cover'], width=60) if book['cover'] else st.write("📘")
+                with c1: st.image(book['cover'], width=60) if book['cover'] else st.write("📘")
                 with c2:
                     st.markdown(f"**{book['title']}**")
                     st.caption(book['author'])
                 with c3:
                     if st.button("Add", key=f"add_{i}"):
-                        sheet.append_row([
-                            st.session_state['username'], 
-                            book['isbn'], 
-                            book['title'], 
-                            book['author'], 
-                            "Available", 
-                            "", 
-                            "", 
-                            book['cover']
-                        ])
-                        st.toast(f"Added to {st.session_state['display_name']}'s list!")
+                        sheet.append_row([st.session_state['username'], book['isbn'], book['title'], book['author'], "Available", "", "", book['cover']])
+                        st.toast(f"Added!")
                 st.divider()
 
-# Tab 2: Manage
 with tab2:
     st.subheader("Manage Your Books")
     all_data = sheet.get_all_records()
     df = pd.DataFrame(all_data)
 
-    # Filter by Owner
     if not df.empty and 'Owner' in df.columns:
         my_books = df[df['Owner'].astype(str).str.lower() == st.session_state['username']]
         
         if my_books.empty:
             st.info("No books yet.")
         else:
-            # Filter
-            filter_txt = st.text_input("Filter your list:", placeholder="Type title...")
+            # 1. SEARCH & EDIT AREA
+            filter_txt = st.text_input("Find a book to manage:", placeholder="Type title...")
+            display_books = my_books
             if filter_txt:
-                my_books = my_books[my_books['Title'].astype(str).str.contains(filter_txt, case=False)]
+                display_books = my_books[my_books['Title'].astype(str).str.contains(filter_txt, case=False)]
 
-            # Selector
-            titles = my_books['Title'].tolist()
+            titles = display_books['Title'].tolist()
             if titles:
                 sel = st.selectbox("Select book to edit:", titles)
-                
-                # Find EXACT row match (Owner + Title)
                 mask = (df['Title'] == sel) & (df['Owner'].astype(str).str.lower() == st.session_state['username'])
                 if not df[mask].empty:
                     idx = df[mask].index[0]
-                    row_num = idx + 2 # Header is 1, index starts at 0
-
-                    cur_status = df.loc[idx, 'Status']
-                    cur_borrower = df.loc[idx, 'Borrower']
-                    cur_cover = df.loc[idx, 'Cover_URL'] if 'Cover_URL' in df.columns else ""
-
+                    row_num = idx + 2
+                    
                     st.divider()
                     colA, colB = st.columns([1,2])
                     with colA:
-                        if str(cur_cover).startswith("http"):
-                            st.image(cur_cover, width=100)
-                        else: st.write("📘")
-                    
+                        cover = df.loc[idx, 'Cover_URL']
+                        st.image(cover, width=100) if str(cover).startswith("http") else st.write("📘")
                     with colB:
                         with st.form("edit_status"):
                             st.markdown(f"**{sel}**")
-                            new_stat = st.radio("Status", ["Available", "Borrowed"], index=0 if cur_status=="Available" else 1)
-                            new_bor = st.text_input("Borrower Name", value=cur_borrower)
-                            if st.form_submit_button("Save"):
-                                sheet.update_cell(row_num, 5, new_stat) # Col E
-                                sheet.update_cell(row_num, 6, new_bor if new_stat=="Borrowed" else "") # Col F
+                            new_stat = st.radio("Status", ["Available", "Borrowed"], index=0 if df.loc[idx, 'Status']=="Available" else 1)
+                            new_bor = st.text_input("Borrower Name", value=df.loc[idx, 'Borrower'])
+                            if st.form_submit_button("Save Changes"):
+                                sheet.update_cell(row_num, 5, new_stat)
+                                sheet.update_cell(row_num, 6, new_bor if new_stat=="Borrowed" else "")
                                 st.success("Updated!")
                                 st.rerun()
+
+            # 2. THE FULL LIST (Back by popular demand)
+            st.divider()
+            st.subheader("Your Full Collection")
+            # Only show relevant columns for a clean look
+            clean_display = my_books[['Title', 'Author', 'Status', 'Borrower']]
+            st.dataframe(clean_display, use_container_width=True, hide_index=True)
