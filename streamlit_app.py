@@ -32,13 +32,14 @@ except Exception as e:
     st.error(f"Database Error: {e}")
     st.stop()
 
-# --- 2. SEARCH LOGIC (Expanded to 40) ---
-def search_google_books(query):
-    # maxResults=40 is the API limit for a single page
-    url = f"https://www.googleapis.com/books/v1/volumes?q={query}&maxResults=40"
+# --- 2. HYBRID SEARCH LOGIC ---
+def search_books_hybrid(query):
     found_books = []
+    clean_query = str(query).strip()
     
+    # STRATEGY A: Google Books (Best for Title/Author lists)
     try:
+        url = f"https://www.googleapis.com/books/v1/volumes?q={clean_query}&maxResults=20"
         response = requests.get(url)
         data = response.json()
         
@@ -46,25 +47,50 @@ def search_google_books(query):
             for item in data["items"]:
                 info = item.get("volumeInfo", {})
                 
-                # Find the best ISBN
+                # Get ISBN safely
                 isbn = "Unknown"
                 for ident in info.get("industryIdentifiers", []):
                     if ident["type"] == "ISBN_13":
                         isbn = ident["identifier"]
                         break
                 
-                # Build the book object
                 book = {
+                    "source": "Google",
                     "title": info.get("title", "Unknown Title"),
                     "author": ", ".join(info.get("authors", ["Unknown Author"])),
                     "cover": info.get("imageLinks", {}).get("thumbnail", ""),
                     "isbn": isbn,
-                    "published": info.get("publishedDate", "")[:4] # Year only
+                    "published": info.get("publishedDate", "")[:4]
                 }
                 found_books.append(book)
-    except Exception as e:
-        st.error(f"Search Error: {e}")
-        
+    except:
+        pass
+
+    # STRATEGY B: Open Library (Backup for ISBNs)
+    # Only runs if Google failed OR if the query looks like an ISBN
+    if not found_books or clean_query.replace("-", "").isdigit():
+        clean_isbn = clean_query.replace("-", "")
+        try:
+            url = f"https://openlibrary.org/api/books?bibkeys=ISBN:{clean_isbn}&format=json&jscmd=data"
+            response = requests.get(url)
+            data = response.json()
+            key = f"ISBN:{clean_isbn}"
+            
+            if key in data:
+                info = data[key]
+                book = {
+                    "source": "OpenLibrary",
+                    "title": info.get("title", "Unknown"),
+                    "author": ", ".join([a["name"] for a in info.get("authors", [])]),
+                    "cover": info.get("cover", {}).get("medium", ""),
+                    "isbn": clean_isbn,
+                    "published": info.get("publish_date", "")
+                }
+                # Add to the TOP of the list
+                found_books.insert(0, book)
+        except:
+            pass
+            
     return found_books
 
 def decode_barcode(image_file):
@@ -82,83 +108,21 @@ def decode_barcode(image_file):
 tab1, tab2 = st.tabs(["➕ Add New Book", "📖 View Library"])
 
 with tab1:
-    st.markdown("### 1. Find a Book")
+    st.write("### Find a Book")
     
-    # Camera Section
+    # Camera
     img_file = st.camera_input("Scan Barcode (Optional)")
     scanned_code = ""
     if img_file:
         scanned_code = decode_barcode(img_file)
         if scanned_code:
             st.success(f"Scanned: {scanned_code}")
-    
-    # Search Input
-    default_search = scanned_code if scanned_code else ""
-    user_query = st.text_input("Enter Title, Author, or ISBN", value=default_search)
+
+    # Search Box
+    default = scanned_code if scanned_code else ""
+    user_query = st.text_input("Enter Title, Author, or ISBN", value=default)
 
     # Search Button
-    if st.button("Search Library", type="primary"):
+    if st.button("Search", type="primary"):
         if user_query:
-            clean_query = user_query.replace("-", "").strip()
-            with st.spinner(f"Searching for '{user_query}'..."):
-                results = search_google_books(clean_query)
-                st.session_state['search_results'] = results
-                
-                if not results:
-                    st.warning("No books found.")
-        else:
-            st.warning("Please enter a title or ISBN.")
-
-    # --- RESULTS LIST ---
-    if 'search_results' in st.session_state and st.session_state['search_results']:
-        results = st.session_state['search_results']
-        st.markdown(f"### Found {len(results)} Results")
-        
-        for i, book in enumerate(results):
-            # We use a container to group the book info nicely
-            with st.container():
-                col1, col2, col3 = st.columns([1, 4, 2])
-                
-                # Col 1: Cover Image
-                with col1:
-                    if book['cover']:
-                        st.image(book['cover'], width=70)
-                    else:
-                        st.write("📘") # Placeholder icon
-                
-                # Col 2: Info
-                with col2:
-                    st.markdown(f"**{book['title']}**")
-                    st.caption(f"{book['author']} ({book['published']})")
-                    st.caption(f"ISBN: {book['isbn']}")
-                
-                # Col 3: Add Button
-                with col3:
-                    # Unique key is essential here!
-                    if st.button("Add to Library", key=f"btn_{i}"):
-                        try:
-                            sheet.append_row([
-                                book['isbn'], 
-                                book['title'], 
-                                book['author'], 
-                                "Available", 
-                                "", 
-                                "", 
-                                book['cover']
-                            ])
-                            st.toast(f"✅ Added '{book['title']}'!")
-                        except Exception as e:
-                            st.error("Save failed. Check permissions.")
-                
-                st.divider()
-
-with tab2:
-    if st.button("Refresh List"):
-        st.rerun()
-    
-    data = sheet.get_all_records()
-    if data:
-        df = pd.DataFrame(data)
-        st.dataframe(df[['Title', 'Author', 'Status']])
-    else:
-        st.info("Library is empty.")
+            with st.spinner(f"Searching for '{user_query
