@@ -116,11 +116,7 @@ def search_books_hybrid(query):
         if "items" in data:
             for item in data["items"]:
                 info = item.get("volumeInfo", {})
-                isbn = "Unknown"
-                for ident in info.get("industryIdentifiers", []):
-                    if ident["type"] == "ISBN_13":
-                        isbn = ident["identifier"]
-                        break
+                isbn = next((i["identifier"] for i in info.get("industryIdentifiers", []) if i["type"] == "ISBN_13"), "Unknown")
                 results.append({
                     "source": "Google",
                     "title": info.get("title", "Unknown"),
@@ -168,22 +164,16 @@ def search_books_hybrid(query):
     return unique
 
 # --- 7. TABS ---
-tab1, tab2 = st.tabs(["➕ Add Books", "📋 My Collection"])
+tab1, tab3, tab2 = st.tabs(["➕ Add Books", "🍽️ On My Plate", "📋 My Collection"])
 
 with tab1:
-    st.subheader("Option A: Scan or Search")
-    
+    st.subheader("Add by Scan or Search")
     img_file = st.camera_input("Scan Barcode")
-    scanned_code = ""
-    if img_file:
-        scanned_code = decode_barcode(img_file)
-        if scanned_code:
-            st.success(f"Scanned: {scanned_code}")
-        else:
-            st.warning("Barcode not found.")
+    scanned = decode_barcode(img_file) if img_file else ""
+    if scanned: st.success(f"Scanned: {scanned}")
 
-    default_val = scanned_code if scanned_code else ""
-    q = st.text_input("Title, Author, or ISBN", value=default_val)
+    default_v = scanned if scanned else ""
+    q = st.text_input("Title, Author, or ISBN", value=default_v)
     
     if st.button("Search Books", type="primary") and q:
         with st.spinner("Searching..."):
@@ -201,74 +191,86 @@ with tab1:
                     st.caption(f"{b['author']} | Source: {b['source']}")
                 with c3:
                     if st.button("Add", key=f"a_{i}"):
-                        sheet.append_row([st.session_state['username'], b['isbn'], b['title'], b['author'], "Available", "", "", b['cover']])
+                        # Columns: Owner(1), ISBN(2), Title(3), Author(4), Status(5), Borrower(6), Due_Date(7), Cover_URL(8), Reading_Progress(9)
+                        sheet.append_row([st.session_state['username'], b['isbn'], b['title'], b['author'], "Available", "", "", b['cover'], ""])
                         st.toast("✅ Added!")
                 st.divider()
 
-    # --- NEW MANUAL ADD SECTION ---
-    st.write("---")
-    with st.expander("Option B: Add Book Manually"):
-        with st.form("manual_add_form"):
-            m_title = st.text_input("Book Title*")
-            m_author = st.text_input("Author Name*")
-            m_isbn = st.text_input("ISBN (optional)")
-            m_cover = st.text_input("Cover Image URL (optional)")
-            
-            if st.form_submit_button("Add Manually"):
-                if m_title and m_author:
-                    sheet.append_row([
-                        st.session_state['username'], 
-                        m_isbn if m_isbn else "N/A", 
-                        m_title, 
-                        m_author, 
-                        "Available", 
-                        "", 
-                        "", 
-                        m_cover
-                    ])
-                    st.success(f"Successfully added '{m_title}'!")
-                else:
-                    st.error("Title and Author are required.")
+    with st.expander("Add Book Manually"):
+        with st.form("manual_add"):
+            mt, ma = st.text_input("Title*"), st.text_input("Author*")
+            mi, mc = st.text_input("ISBN"), st.text_input("Cover URL")
+            if st.form_submit_button("Save"):
+                if mt and ma:
+                    sheet.append_row([st.session_state['username'], mi if mi else "N/A", mt, ma, "Available", "", "", mc, ""])
+                    st.success("Added!")
+                else: st.error("Required fields missing.")
+
+with tab3:
+    st.header("Active Reading")
+    raw_df = pd.DataFrame(sheet.get_all_records())
+    
+    if not raw_df.empty and 'Owner' in raw_df.columns:
+        reading = raw_df[(raw_df['Owner'].astype(str).str.lower() == st.session_state['username']) & (raw_df['Status'] == "Reading")]
+        
+        if reading.empty:
+            st.info("No active books. Mark a book as 'Reading' in your collection to see it here!")
+        else:
+            prog_vals = ["10% or less", "20%", "30%", "40%", "Half way there", "60%", "70%", "80%", "Almost done", "Finished"]
+            for idx, row in reading.iterrows():
+                with st.container():
+                    cA, cB = st.columns([1, 3])
+                    with cA:
+                        if str(row['Cover_URL']).startswith("http"): st.image(row['Cover_URL'], width=80)
+                        else: st.write("📖")
+                    with cB:
+                        st.subheader(row['Title'])
+                        cur_p = row['Reading_Progress'] if row['Reading_Progress'] in prog_vals else "10% or less"
+                        with st.form(f"p_form_{idx}"):
+                            new_p = st.selectbox("Progress", prog_vals, index=prog_vals.index(cur_p))
+                            if st.form_submit_button("Save"):
+                                row_num = idx + 2
+                                if new_p == "Finished":
+                                    sheet.update_cell(row_num, 5, "Available")
+                                    sheet.update_cell(row_num, 9, "")
+                                else:
+                                    sheet.update_cell(row_num, 9, new_p)
+                                st.rerun()
+                st.divider()
 
 with tab2:
     st.subheader("Manage Your Books")
-    df_raw = pd.DataFrame(sheet.get_all_records())
-    
-    if not df_raw.empty and 'Owner' in df_raw.columns:
-        my_books = df_raw[df_raw['Owner'].astype(str).str.lower() == st.session_state['username']]
-        
-        if my_books.empty:
-            st.info("No books yet.")
-        else:
-            f_txt = st.text_input("Filter list:", placeholder="Type title...")
-            d_books = my_books[my_books['Title'].astype(str).str.contains(f_txt, case=False)] if f_txt else my_books
-            
+    df = pd.DataFrame(sheet.get_all_records())
+    if not df.empty and 'Owner' in df.columns:
+        my_books = df[df['Owner'].astype(str).str.lower() == st.session_state['username']]
+        if not my_books.empty:
+            f = st.text_input("Filter list:", placeholder="Type title...")
+            d_books = my_books[my_books['Title'].astype(str).str.contains(f, case=False)] if f else my_books
             if not d_books.empty:
                 sel = st.selectbox("Select book:", d_books['Title'].tolist())
-                match = df_raw[(df_raw['Title'] == sel) & (df_raw['Owner'].astype(str).str.lower() == st.session_state['username'])]
-                
+                match = df[(df['Title'] == sel) & (df['Owner'].astype(str).str.lower() == st.session_state['username'])]
                 if not match.empty:
                     idx = match.index[0]
-                    row_num = idx + 2
-                    
+                    row_n = idx + 2
                     st.divider()
-                    colA, colB = st.columns([1, 2])
-                    with colA:
-                        cv = df_raw.loc[idx, 'Cover_URL']
+                    col_i, col_f = st.columns([1, 2])
+                    with col_i:
+                        cv = df.loc[idx, 'Cover_URL']
                         if str(cv).startswith("http"): st.image(cv, width=120)
                         else: st.write("📘 No Cover")
                         st.write("---")
-                        if st.button("🗑️ Delete Book", type="secondary"):
-                            sheet.delete_rows(row_num)
+                        if st.button("🗑️ Delete Book"):
+                            sheet.delete_rows(row_n)
                             st.rerun()
-                    with colB:
-                        with st.form("edit_loan"):
+                    with col_f:
+                        with st.form("loan_form"):
                             st.markdown(f"### {sel}")
-                            ns = st.radio("Status", ["Available", "Borrowed"], index=0 if df_raw.loc[idx, 'Status']=="Available" else 1)
-                            nb = st.text_input("Borrower", value=df_raw.loc[idx, 'Borrower'])
-                            if st.form_submit_button("Save Changes"):
-                                sheet.update_cell(row_num, 5, ns)
-                                sheet.update_cell(row_num, 6, nb if ns=="Borrowed" else "")
+                            n_s = st.radio("Status", ["Available", "Borrowed", "Reading"], index=["Available", "Borrowed", "Reading"].index(df.loc[idx, 'Status']) if df.loc[idx, 'Status'] in ["Available", "Borrowed", "Reading"] else 0)
+                            n_b = st.text_input("Borrower", value=df.loc[idx, 'Borrower'])
+                            if st.form_submit_button("Save"):
+                                sheet.update_cell(row_n, 5, n_s)
+                                sheet.update_cell(row_n, 6, n_b if n_s == "Borrowed" else "")
+                                if n_s == "Reading": sheet.update_cell(row_n, 9, "10% or less")
                                 st.rerun()
             st.divider()
-            st.dataframe(my_books[['Title', 'Author', 'Status', 'Borrower']], use_container_width=True, hide_index=True)
+            st.dataframe(my_books[['Title', 'Author', 'Status', 'Borrower', 'Reading_Progress']], use_container_width=True, hide_index=True)
