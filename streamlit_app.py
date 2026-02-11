@@ -93,7 +93,18 @@ if st.sidebar.button("Logout"):
 
 st.title(f"{st.session_state['display_name']}'s Library")
 
-# --- 6. HYBRID SEARCH ENGINE ---
+# --- 6. BARCODE & SEARCH LOGIC ---
+def decode_barcode(image_file):
+    try:
+        image = Image.open(image_file)
+        decoded_objects = decode(image)
+        for obj in decoded_objects:
+            if obj.type in ['EAN13', 'ISBN13']:
+                return obj.data.decode('utf-8')
+    except:
+        pass
+    return None
+
 def search_books_hybrid(query):
     results = []
     clean_query = str(query).strip()
@@ -150,7 +161,6 @@ def search_books_hybrid(query):
                 })
     except: pass
 
-    # Deduplicate
     seen = set()
     unique = []
     for b in results:
@@ -163,8 +173,22 @@ def search_books_hybrid(query):
 tab1, tab2 = st.tabs(["➕ Add Books", "📋 My Collection"])
 
 with tab1:
-    st.subheader("Add to Your Collection")
-    q = st.text_input("Search Title, Author, or ISBN")
+    st.subheader("Scan or Search")
+    
+    # Camera Input
+    img_file = st.camera_input("Scan Barcode")
+    scanned_code = ""
+    if img_file:
+        scanned_code = decode_barcode(img_file)
+        if scanned_code:
+            st.success(f"Scanned: {scanned_code}")
+        else:
+            st.warning("Barcode not found. Try a clearer angle.")
+
+    # Search Box (fills with scanned code if available)
+    default_val = scanned_code if scanned_code else ""
+    q = st.text_input("Title, Author, or ISBN", value=default_val)
+    
     if st.button("Search Books", type="primary") and q:
         with st.spinner("Searching..."):
             st.session_state['s_res'] = search_books_hybrid(q)
