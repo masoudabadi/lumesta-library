@@ -5,9 +5,8 @@ import requests
 import pandas as pd
 from PIL import Image
 from pyzbar.pyzbar import decode
-import numpy as np
 
-st.set_page_config(page_title="Lumesta Library", page_icon="📚")
+st.set_page_config(page_title="Lumesta Library", page_icon="📚", layout="centered")
 st.title("📚 Lumesta Library")
 
 # --- 1. CONNECT TO DATABASE ---
@@ -33,118 +32,125 @@ except Exception as e:
     st.error(f"Database Error: {e}")
     st.stop()
 
-# --- 2. FUNCTIONS ---
+# --- 2. SEARCH LOGIC (Expanded to 40) ---
 def search_google_books(query):
-    url = f"https://www.googleapis.com/books/v1/volumes?q={query}"
+    # maxResults=40 is the API limit for a single page
+    url = f"https://www.googleapis.com/books/v1/volumes?q={query}&maxResults=40"
+    found_books = []
+    
     try:
         response = requests.get(url)
         data = response.json()
+        
         if "items" in data:
-            info = data["items"][0]["volumeInfo"]
-            return {
-                "title": info.get("title", "Unknown"),
-                "author": ", ".join(info.get("authors", ["Unknown"])),
-                "cover": info.get("imageLinks", {}).get("thumbnail", "")
-            }
-    except:
-        pass
-    return None
-
-def search_open_library(isbn):
-    url = f"https://openlibrary.org/api/books?bibkeys=ISBN:{isbn}&format=json&jscmd=data"
-    try:
-        response = requests.get(url)
-        data = response.json()
-        key = f"ISBN:{isbn}"
-        if key in data:
-            info = data[key]
-            return {
-                "title": info.get("title", "Unknown"),
-                "author": ", ".join([a["name"] for a in info.get("authors", [])]),
-                "cover": info.get("cover", {}).get("medium", "")
-            }
-    except:
-        pass
-    return None
+            for item in data["items"]:
+                info = item.get("volumeInfo", {})
+                
+                # Find the best ISBN
+                isbn = "Unknown"
+                for ident in info.get("industryIdentifiers", []):
+                    if ident["type"] == "ISBN_13":
+                        isbn = ident["identifier"]
+                        break
+                
+                # Build the book object
+                book = {
+                    "title": info.get("title", "Unknown Title"),
+                    "author": ", ".join(info.get("authors", ["Unknown Author"])),
+                    "cover": info.get("imageLinks", {}).get("thumbnail", ""),
+                    "isbn": isbn,
+                    "published": info.get("publishedDate", "")[:4] # Year only
+                }
+                found_books.append(book)
+    except Exception as e:
+        st.error(f"Search Error: {e}")
+        
+    return found_books
 
 def decode_barcode(image_file):
     try:
         image = Image.open(image_file)
         decoded_objects = decode(image)
         for obj in decoded_objects:
-            # Look for ISBNs (EAN13)
-            if obj.type == 'EAN13' or obj.type == 'ISBN13':
+            if obj.type in ['EAN13', 'ISBN13']:
                 return obj.data.decode('utf-8')
-    except Exception as e:
-        st.error(f"Camera Error: {e}")
+    except:
+        pass
     return None
 
 # --- 3. APP INTERFACE ---
 tab1, tab2 = st.tabs(["➕ Add New Book", "📖 View Library"])
 
 with tab1:
-    st.write("### Step 1: Get the ISBN")
+    st.markdown("### 1. Find a Book")
     
-    # A. CAMERA INPUT
+    # Camera Section
     img_file = st.camera_input("Scan Barcode (Optional)")
     scanned_code = ""
-    
     if img_file:
         scanned_code = decode_barcode(img_file)
         if scanned_code:
             st.success(f"Scanned: {scanned_code}")
-        else:
-            st.warning("Could not read barcode. Try getting closer or clearer lighting.")
-
-    # B. MANUAL INPUT (Auto-filled if scanned)
-    # We use 'value=' to fill it if the camera worked
-    user_input = st.text_input("ISBN or Title", value=scanned_code if scanned_code else "")
     
-    st.write("### Step 2: Search & Save")
-    if st.button("Search"):
-        if user_input:
-            clean_isbn = user_input.replace("-", "").strip()
-            
-            with st.spinner("Searching..."):
-                book = search_google_books(clean_isbn)
-                if not book and clean_isbn.isdigit():
-                    book = search_open_library(clean_isbn)
+    # Search Input
+    default_search = scanned_code if scanned_code else ""
+    user_query = st.text_input("Enter Title, Author, or ISBN", value=default_search)
 
-            if book:
-                # Save to session state
-                st.session_state['current_book'] = book
-                st.session_state['current_isbn'] = user_input
-            else:
-                st.error("❌ Not found.")
+    # Search Button
+    if st.button("Search Library", type="primary"):
+        if user_query:
+            clean_query = user_query.replace("-", "").strip()
+            with st.spinner(f"Searching for '{user_query}'..."):
+                results = search_google_books(clean_query)
+                st.session_state['search_results'] = results
+                
+                if not results:
+                    st.warning("No books found.")
+        else:
+            st.warning("Please enter a title or ISBN.")
 
-    # Result Display
-    if 'current_book' in st.session_state:
-        book = st.session_state['current_book']
-        st.info("Found it!")
+    # --- RESULTS LIST ---
+    if 'search_results' in st.session_state and st.session_state['search_results']:
+        results = st.session_state['search_results']
+        st.markdown(f"### Found {len(results)} Results")
         
-        col1, col2 = st.columns([1, 3])
-        with col1:
-            if book['cover']:
-                st.image(book['cover'], width=100)
-        with col2:
-            st.subheader(book['title'])
-            st.write(f"**Author:** {book['author']}")
-        
-        if st.button("Confirm Add to Library"):
-            try:
-                sheet.append_row([
-                    st.session_state['current_isbn'], 
-                    book['title'], 
-                    book['author'], 
-                    "Available", 
-                    "", 
-                    "", 
-                    book['cover']
-                ])
-                st.success("✅ Saved!")
-                del st.session_state['current_book']
-            except Exception as e:
-                st.error(f"Save Error: {e}")
+        for i, book in enumerate(results):
+            # We use a container to group the book info nicely
+            with st.container():
+                col1, col2, col3 = st.columns([1, 4, 2])
+                
+                # Col 1: Cover Image
+                with col1:
+                    if book['cover']:
+                        st.image(book['cover'], width=70)
+                    else:
+                        st.write("📘") # Placeholder icon
+                
+                # Col 2: Info
+                with col2:
+                    st.markdown(f"**{book['title']}**")
+                    st.caption(f"{book['author']} ({book['published']})")
+                    st.caption(f"ISBN: {book['isbn']}")
+                
+                # Col 3: Add Button
+                with col3:
+                    # Unique key is essential here!
+                    if st.button("Add to Library", key=f"btn_{i}"):
+                        try:
+                            sheet.append_row([
+                                book['isbn'], 
+                                book['title'], 
+                                book['author'], 
+                                "Available", 
+                                "", 
+                                "", 
+                                book['cover']
+                            ])
+                            st.toast(f"✅ Added '{book['title']}'!")
+                        except Exception as e:
+                            st.error("Save failed. Check permissions.")
+                
+                st.divider()
 
 with tab2:
     if st.button("Refresh List"):
@@ -153,6 +159,6 @@ with tab2:
     data = sheet.get_all_records()
     if data:
         df = pd.DataFrame(data)
-        st.dataframe(df)
+        st.dataframe(df[['Title', 'Author', 'Status']])
     else:
         st.info("Library is empty.")
