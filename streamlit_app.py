@@ -3,6 +3,9 @@ import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 import requests
 import pandas as pd
+from PIL import Image
+from pyzbar.pyzbar import decode
+import numpy as np
 
 st.set_page_config(page_title="Lumesta Library", page_icon="📚")
 st.title("📚 Lumesta Library")
@@ -21,11 +24,7 @@ try:
         "auth_provider_x509_cert_url": st.secrets["gcp_service_account"]["auth_provider_x509_cert_url"],
         "client_x509_cert_url": st.secrets["gcp_service_account"]["client_x509_cert_url"]
     }
-    # Expanded Scope for Writing
-    scope = [
-        "https://www.googleapis.com/auth/spreadsheets",
-        "https://www.googleapis.com/auth/drive"
-    ]
+    scope = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
     creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
     client = gspread.authorize(creds)
     sheet = client.open("Lumesta_Library").sheet1
@@ -34,7 +33,7 @@ except Exception as e:
     st.error(f"Database Error: {e}")
     st.stop()
 
-# --- 2. SEARCH LOGIC ---
+# --- 2. FUNCTIONS ---
 def search_google_books(query):
     url = f"https://www.googleapis.com/books/v1/volumes?q={query}"
     try:
@@ -68,12 +67,40 @@ def search_open_library(isbn):
         pass
     return None
 
+def decode_barcode(image_file):
+    try:
+        image = Image.open(image_file)
+        decoded_objects = decode(image)
+        for obj in decoded_objects:
+            # Look for ISBNs (EAN13)
+            if obj.type == 'EAN13' or obj.type == 'ISBN13':
+                return obj.data.decode('utf-8')
+    except Exception as e:
+        st.error(f"Camera Error: {e}")
+    return None
+
 # --- 3. APP INTERFACE ---
 tab1, tab2 = st.tabs(["➕ Add New Book", "📖 View Library"])
 
 with tab1:
-    user_input = st.text_input("Enter ISBN or Title", "")
+    st.write("### Step 1: Get the ISBN")
     
+    # A. CAMERA INPUT
+    img_file = st.camera_input("Scan Barcode (Optional)")
+    scanned_code = ""
+    
+    if img_file:
+        scanned_code = decode_barcode(img_file)
+        if scanned_code:
+            st.success(f"Scanned: {scanned_code}")
+        else:
+            st.warning("Could not read barcode. Try getting closer or clearer lighting.")
+
+    # B. MANUAL INPUT (Auto-filled if scanned)
+    # We use 'value=' to fill it if the camera worked
+    user_input = st.text_input("ISBN or Title", value=scanned_code if scanned_code else "")
+    
+    st.write("### Step 2: Search & Save")
     if st.button("Search"):
         if user_input:
             clean_isbn = user_input.replace("-", "").strip()
@@ -84,16 +111,17 @@ with tab1:
                     book = search_open_library(clean_isbn)
 
             if book:
-                # Save book to session state so it remembers it
+                # Save to session state
                 st.session_state['current_book'] = book
                 st.session_state['current_isbn'] = user_input
             else:
                 st.error("❌ Not found.")
 
-    # Show the result if we found one
+    # Result Display
     if 'current_book' in st.session_state:
         book = st.session_state['current_book']
-        st.success("Found it!")
+        st.info("Found it!")
+        
         col1, col2 = st.columns([1, 3])
         with col1:
             if book['cover']:
@@ -102,7 +130,6 @@ with tab1:
             st.subheader(book['title'])
             st.write(f"**Author:** {book['author']}")
         
-        # THE SAVE BUTTON
         if st.button("Confirm Add to Library"):
             try:
                 sheet.append_row([
@@ -114,18 +141,15 @@ with tab1:
                     "", 
                     book['cover']
                 ])
-                st.success("✅ Saved to Google Sheet!")
-                # Clear the search
+                st.success("✅ Saved!")
                 del st.session_state['current_book']
             except Exception as e:
-                st.error(f"❌ WRITE ERROR: {e}")
-                st.info("Tip: Check if 'masoud-app@...' is an EDITOR in the Google Sheet Share settings.")
+                st.error(f"Save Error: {e}")
 
 with tab2:
     if st.button("Refresh List"):
         st.rerun()
     
-    # Show current data
     data = sheet.get_all_records()
     if data:
         df = pd.DataFrame(data)
